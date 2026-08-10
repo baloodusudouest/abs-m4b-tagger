@@ -110,6 +110,39 @@ class BookMeta:
                     "duration": f.get("duration", 0),
                 })
 
+    def refine_authors(self, patterns: list, drop_narrators: bool = True,
+                       sort: bool = True) -> list:
+        """Nettoie la liste d'auteurs renvoyée par Audiobookshelf.
+
+        Les métadonnées Audible françaises créditent souvent traducteurs et
+        narrateurs comme auteurs, et l'ordre varie d'un livre à l'autre : un même
+        auteur se retrouve alors dans deux dossiers différents. On retire les
+        mentions de rôle, les personnes déjà listées comme narrateurs, puis on
+        trie pour garantir un nommage stable.
+
+        Retourne la liste des noms écartés.
+        """
+        if not self.authors:
+            return []
+        original = list(self.authors)
+        rx = re.compile("|".join(patterns), re.I) if patterns else None
+        narrators = {n.strip().lower() for n in self.narrators} if drop_narrators else set()
+
+        kept = []
+        for name in original:
+            if rx and rx.search(name):
+                continue
+            if name.strip().lower() in narrators:
+                continue
+            kept.append(name)
+
+        if not kept:            # tout aurait disparu : on ne touche à rien
+            return []
+        if sort:
+            kept.sort(key=lambda n: n.lower())
+        self.authors = kept
+        return [n for n in original if n not in kept]
+
     # ---------------------------------------------------------- champs dérivés
     @property
     def author(self) -> str:

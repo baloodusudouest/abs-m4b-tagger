@@ -78,6 +78,16 @@ services:
       EXPORT_COLLAPSE_SPACES: "${EXPORT_COLLAPSE_SPACES:-false}"
       EXPORT_MAX_COMPONENT: "${EXPORT_MAX_COMPONENT:-180}"
       EXPORT_PRUNE_STALE: "${EXPORT_PRUNE_STALE:-true}"
+      EXPORT_MAX_PATH: "${EXPORT_MAX_PATH:-255}"
+
+      # ---------------- Nettoyage de la liste d'auteurs ----------------
+      # Les métadonnées Audible françaises créditent souvent traducteurs et
+      # narrateurs comme auteurs, dans un ordre variable : un même auteur se
+      # retrouve alors réparti dans plusieurs dossiers.
+      AUTHOR_EXCLUDE: "${AUTHOR_EXCLUDE:-traducteur,traductrice,traduction,narrateur,narratrice,lu par,adaptation,illustrateur,illustratrice,postface,préface}"
+      AUTHOR_DROP_NARRATORS: "${AUTHOR_DROP_NARRATORS:-true}"
+      AUTHOR_SORT: "${AUTHOR_SORT:-true}"
+      TRUST_UPDATED_AT: "${TRUST_UPDATED_AT:-true}"
 
     volumes:
       - "${CONFIG_DIR:-/volume1/docker/abs-tagger/config}:/config"

@@ -139,6 +139,11 @@ def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
         log.debug("  %s : aucun fichier audio", meta.title or item_id)
         return "skip"
 
+    dropped = meta.refine_authors(cfg.author_exclude, cfg.author_drop_narrators,
+                                  cfg.author_sort)
+    if dropped:
+        log.debug("    auteurs écartés (%s) : %s", meta.title, ", ".join(dropped))
+
     previous = state.get(item_id, {})
     if raw.get("isMissing") and previous.get("moved"):
         log.debug("  %s : déjà déplacé, item marqué manquant dans ABS", meta.title)
@@ -165,6 +170,16 @@ def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
     # --- écriture des tags ------------------------------------------------
     need_cover = (cfg.write_cover or cfg.write_sidecars
                   or (cfg.export_action != "none" and "cover" in cfg.export_sidecars))
+    # Sur une grande bibliothèque, télécharger la pochette de chaque livre à
+    # chaque passe coûte cher : si ABS n'a pas touché à l'item, on s'arrête là.
+    if (cfg.trust_updated_at and not cfg.force and meta.updated_at
+            and previous.get("updatedAt") == meta.updated_at
+            and previous.get("fingerprint")
+            and (cfg.export_action == "none"
+                 or (previous.get("export") == exportmod.expected_rel(cfg, meta)
+                     and export_intact(cfg, meta, previous)))):
+        return "skip"
+
     cover_raw, cover_mime = (None, None)
     if need_cover:
         cover_raw, cover_mime = client.cover(item_id)
