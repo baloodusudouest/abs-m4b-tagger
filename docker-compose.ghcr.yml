@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# abs-m4b-tagger — variante utilisant l'image pré-construite par GitHub Actions
+#
+# Aucune construction sur le NAS : Portainer se contente de tirer l'image.
+# Le workflow .github/workflows/docker-publish.yml publie l'image sur GHCR
+# à chaque push sur main et à chaque tag v*.
+#
+# Portainer > Stacks > Add stack > Repository
+#   Compose path : docker-compose.ghcr.yml
+#   Variable IMAGE : ghcr.io/<ton-compte>/abs-m4b-tagger:latest
+# ---------------------------------------------------------------------------
+
+services:
+  abs-m4b-tagger:
+    image: "${IMAGE:-ghcr.io/baloodusudouest/abs-m4b-tagger:latest}"
+    container_name: abs-m4b-tagger
+    restart: unless-stopped
+    pull_policy: always
+
+    user: "${PUID:-1026}:${PGID:-100}"
+
+    environment:
+      TZ: "${TZ:-Europe/Paris}"
+
+      ABS_URL: "${ABS_URL:?ABS_URL est obligatoire}"
+      ABS_TOKEN: "${ABS_TOKEN:?ABS_TOKEN est obligatoire}"
+      ABS_VERIFY_SSL: "${ABS_VERIFY_SSL:-true}"
+
+      PATH_MAP: "${PATH_MAP:-/audiobooks:/livres}"
+
+      INTERVAL: "${INTERVAL:-3600}"
+      DRY_RUN: "${DRY_RUN:-false}"
+      FORCE: "${FORCE:-false}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      STATE_FILE: "/config/state.json"
+      ABS_LIBRARIES: "${ABS_LIBRARIES:-}"
+
+      WRITE_COVER: "${WRITE_COVER:-true}"
+      COVER_MAX_PX: "${COVER_MAX_PX:-1200}"
+      STRIP_HTML: "${STRIP_HTML:-true}"
+      WRITE_COMMENT: "${WRITE_COMMENT:-true}"
+      TRACK_TITLE_MODE: "${TRACK_TITLE_MODE:-filename}"
+      SYNC_CHAPTERS: "${SYNC_CHAPTERS:-false}"
+      WRITE_SIDECARS: "${WRITE_SIDECARS:-false}"
+
+      INCOMPLETE_CHECKS: "${INCOMPLETE_CHECKS:-identifier,author,cover}"
+      ON_INCOMPLETE: "${ON_INCOMPLETE:-tag}"
+      INCOMPLETE_TAG: "${INCOMPLETE_TAG:-a-identifier}"
+      REMOVE_TAG_WHEN_COMPLETE: "${REMOVE_TAG_WHEN_COMPLETE:-true}"
+      TAG_INCOMPLETE_FILES: "${TAG_INCOMPLETE_FILES:-false}"
+
+      ORPHAN_ACTION: "${ORPHAN_ACTION:-report}"
+      ORPHAN_SCAN_DIRS: "${ORPHAN_SCAN_DIRS:-/livres}"
+      ORPHAN_MIN_AGE_MIN: "${ORPHAN_MIN_AGE_MIN:-30}"
+      UNMATCHED_DIR: "${UNMATCHED_DIR:-/a-trier}"
+
+    volumes:
+      - "${CONFIG_DIR:-/volume1/docker/abs-tagger/config}:/config"
+      - "${LIBRARY_DIR:-/volume1/media/livres}:/livres"
+      - "${TRIAGE_DIR:-/volume1/media/a-trier}:/a-trier"

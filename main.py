@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""abs-m4b-tagger — écrit les métadonnées Audiobookshelf dans les fichiers m4b/mp3.
+
+Lit l'API Audiobookshelf, puis écrit directement les tags dans les fichiers
+présents sur le NAS (aucun téléchargement, contrairement à Mp3tag).
+
+Assure aussi le triage :
+  - livres présents dans ABS mais non identifiés  -> tag ABS et/ou déplacement
+  - fichiers audio présents sur disque mais absents d'ABS -> signalement/déplacement
+"""
+
+import argparse
+import json
+import logging
+import os
+import signal
+import sys
+import time
+
+from config import Config
+from absclient import AbsClient, AbsError
+from tagger import AUDIO_EXT, BookMeta, prepare_cover, write_mp3, write_mp4
+import chapters as chapmod
+import triage
+
+log = logging.getLogger("main")
+_STOP = False
+
+
+def _handle_signal(signum, frame):
+    global _STOP
+    _STOP = True
+    log.info("Signal %s reçu, arrêt à la fin de l'item en cours…", signum)
+
+
+# ------------------------------------------------------------------- état
+def load_state(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    except Exception as e:
+        log.warning("Impossible de lire l'état %s : %s", path, e)
+        return {}
+
+
+def save_state(path: str, state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=1, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception as e:
+        log.warning("Impossible d'écrire l'état %s : %s", path, e)
+
+
+# ------------------------------------------------------------- fichiers annexes
+def write_sidecars(folder: str, meta: BookMeta, cover, dry_run: bool) -> None:
+    """cover.jpg / desc.txt / reader.txt (utile pour Plex et Booksonic)."""
+    if not os.path.isdir(folder):
+        return
+    targets = []
+    if cover and cover[0]:
+        ext = ".png" if cover[2] == "image/png" else ".jpg"
+        targets.append((os.path.join(folder, f"cover{ext}"), cover[0], "wb"))
+    if meta.description:
+        targets.append((os.path.join(folder, "desc.txt"), meta.description, "w"))
+    if meta.narrator:
+        targets.append((os.path.join(folder, "reader.txt"), meta.narrator, "w"))
+    for path, data, mode in targets:
+        if dry_run:
+            log.debug("      [dry-run] annexe %s", os.path.basename(path))
+            continue
+        try:
+            kwargs = {"encoding": "utf-8"} if mode == "w" else {}
+            with open(path, mode, **kwargs) as fh:
+                fh.write(data)
+        except OSError as e:
+            log.warning("      annexe %s impossible : %s", os.path.basename(path), e)
+
+
+# --------------------------------------------------------------- traitement
+def handle_incomplete(client, cfg, meta, item, gaps, report) -> None:
+    """Pose le tag ABS et/ou déplace le dossier d'un livre non identifié."""
+    labels = ", ".join(triage.FIELD_LABELS.get(g, g) for g in gaps)
+    log.info("  /!\\ %s — non identifié (manque : %s)", meta.title or meta.id, labels)
+    report.append({"id": meta.id, "titre": meta.title, "manque": gaps,
+                   "chemin": meta.path})
+
+    if cfg.on_incomplete in ("tag", "both"):
+        try:
+            triage.apply_abs_tag(client, meta.id, meta.tags, cfg.incomplete_tag,
+                                 True, cfg.dry_run)
+        except AbsError as e:
+            log.error("      %s", e)
+
+    if cfg.on_incomplete in ("move", "both"):
+        local = cfg.map_path(meta.path)
+        if os.path.isdir(local) or os.path.isfile(local):
+            triage.move_aside(local, cfg.library_roots, cfg.unmatched_dir, cfg.dry_run)
+        else:
+            log.warning("      dossier introuvable pour déplacement : %s", local)
+
+
+def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
+                 known_paths: set, report: list) -> str:
+    """Retourne 'ok', 'skip', 'incomplete', 'error' ou 'missing'."""
+    raw = client.item(item_id)
+    meta = BookMeta(raw, strip_html=cfg.strip_html)
+
+    if not meta.audio_files:
+        log.debug("  %s : aucun fichier audio", meta.title or item_id)
+        return "skip"
+
+    # Les chemins connus servent ensuite à repérer les orphelins sur le disque
+    for af in meta.audio_files:
+        known_paths.add(os.path.normpath(cfg.map_path(af["path"])))
+
+    # --- livre non identifié ? -------------------------------------------
+    gaps = triage.missing_fields(meta, raw, cfg.incomplete_checks)
+    if gaps:
+        handle_incomplete(client, cfg, meta, raw, gaps, report)
+        if not cfg.tag_incomplete_files:
+            state.pop(meta.id, None)
+            return "incomplete"
+    elif cfg.remove_tag_when_complete and cfg.on_incomplete in ("tag", "both"):
+        try:
+            triage.apply_abs_tag(client, meta.id, meta.tags, cfg.incomplete_tag,
+                                 False, cfg.dry_run)
+        except AbsError as e:
+            log.debug("      retrait du tag impossible : %s", e)
+
+    # --- écriture des tags ------------------------------------------------
+    cover_raw, cover_mime = (None, None)
+    if cfg.write_cover or cfg.write_sidecars:
+        cover_raw, cover_mime = client.cover(item_id)
+    cover = prepare_cover(cover_raw, cover_mime, cfg.cover_max_px)
+
+    fingerprint = meta.fingerprint(cover[0] if cover else None)
+    if not cfg.force and state.get(item_id, {}).get("fingerprint") == fingerprint:
+        return "skip"
+
+    total = len(meta.audio_files)
+    label = f"{meta.author} — {meta.title}" if meta.author else meta.title
+    log.info("  %s (%d fichier%s)", label, total, "s" if total > 1 else "")
+
+    touched, failed = 0, 0
+    for af in meta.audio_files:
+        local = cfg.map_path(af["path"])
+        if not os.path.isfile(local):
+            log.error("    fichier introuvable : %s (source ABS : %s)", local, af["path"])
+            log.error("    -> vérifie PATH_MAP et le montage du volume")
+            failed += 1
+            continue
+        ext = os.path.splitext(local)[1].lower()
+        if ext not in AUDIO_EXT:
+            continue
+        try:
+            if cfg.sync_chapters and total == 1 and meta.chapters:
+                chapmod.sync_chapters(local, meta.chapters, af.get("duration") or 0,
+                                      cfg.dry_run)
+            if ext == ".mp3":
+                write_mp3(local, meta, af["index"], total, cfg, cover)
+            else:
+                write_mp4(local, meta, af["index"], total, cfg, cover)
+            touched += 1
+            log.debug("    tags écrits : %s", os.path.basename(local))
+        except Exception as e:
+            log.error("    échec sur %s : %s", os.path.basename(local), e)
+            failed += 1
+
+    if cfg.write_sidecars:
+        write_sidecars(cfg.map_path(meta.path), meta, cover, cfg.dry_run)
+
+    if failed:
+        return "missing" if not touched else "error"
+    if not cfg.dry_run:
+        state[item_id] = {
+            "fingerprint": fingerprint,
+            "title": meta.title,
+            "updatedAt": meta.updated_at,
+            "taggedAt": int(time.time()),
+        }
+    return "ok"
+
+
+# --------------------------------------------------------------- orphelins
+def handle_orphans(cfg: Config, known_paths: set, report: list) -> int:
+    if cfg.orphan_action == "none":
+        return 0
+    roots = cfg.library_roots
+    if not roots:
+        return 0
+
+    orphans = triage.find_orphans(roots, known_paths, cfg.unmatched_dir,
+                                  cfg.orphan_min_age_min * 60)
+    if not orphans:
+        log.info("Aucun fichier orphelin sur le disque.")
+        return 0
+
+    targets = triage.group_orphans(orphans, roots)
+    log.warning("%d fichier(s) audio absent(s) d'Audiobookshelf, soit %d élément(s) à trier :",
+                len(orphans), len(targets))
+    for t in targets:
+        log.warning("  - %s", t)
+        report.append({"orphelin": t})
+        if cfg.orphan_action == "move":
+            triage.move_aside(t, roots, cfg.unmatched_dir, cfg.dry_run)
+    if cfg.orphan_action == "report":
+        log.warning("  (ORPHAN_ACTION=report : rien n'a été déplacé)")
+    return len(targets)
+
+
+def write_report(cfg: Config, report: list) -> None:
+    if not report:
+        return
+    path = os.path.join(os.path.dirname(cfg.state_file) or ".", "a-traiter.json")
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"genere": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "elements": report}, fh, indent=1, ensure_ascii=False)
+        log.info("Rapport écrit : %s", path)
+    except OSError as e:
+        log.warning("Rapport impossible : %s", e)
+
+
+# ------------------------------------------------------------------ passes
+def select_libraries(client: AbsClient, cfg: Config) -> list:
+    libs = [l for l in client.libraries() if l.get("mediaType", "book") == "book"]
+    if not cfg.libraries:
+        return libs
+    wanted = {w.lower() for w in cfg.libraries}
+    chosen = [l for l in libs if l.get("id", "").lower() in wanted
+              or (l.get("name") or "").lower() in wanted]
+    if not chosen:
+        log.warning("Aucune bibliothèque ne correspond à ABS_LIBRARIES=%s", cfg.libraries)
+    return chosen
+
+
+def run_once(cfg: Config) -> int:
+    client = AbsClient(cfg.abs_url, cfg.abs_token, cfg.verify_ssl, cfg.timeout)
+    state = load_state(cfg.state_file)
+    stats = {"ok": 0, "skip": 0, "incomplete": 0, "error": 0, "missing": 0}
+    known_paths, report = set(), []
+    started = time.time()
+    full_scan = not cfg.only_items
+
+    if cfg.only_items:
+        item_ids = list(cfg.only_items)
+        log.info("Traitement de %d item(s) explicite(s)", len(item_ids))
+    else:
+        item_ids = []
+        for lib in select_libraries(client, cfg):
+            ids = client.library_item_ids(lib["id"])
+            log.info("Bibliothèque « %s » : %d livre(s)", lib.get("name", lib["id"]), len(ids))
+            item_ids.extend(ids)
+
+    for item_id in item_ids:
+        if _STOP:
+            full_scan = False
+            break
+        try:
+            result = process_item(client, cfg, item_id, state, known_paths, report)
+        except AbsError as e:
+            log.error("  %s : %s", item_id, e)
+            result = "error"
+        except Exception as e:
+            log.exception("  %s : erreur inattendue : %s", item_id, e)
+            result = "error"
+        stats[result] = stats.get(result, 0) + 1
+        if stats["ok"] and stats["ok"] % 25 == 0:
+            save_state(cfg.state_file, state)
+
+    save_state(cfg.state_file, state)
+
+    orphans = 0
+    if full_scan and not cfg.libraries:
+        orphans = handle_orphans(cfg, known_paths, report)
+    elif cfg.orphan_action != "none":
+        log.info("Détection des orphelins ignorée (passe partielle : --item ou ABS_LIBRARIES).")
+
+    write_report(cfg, report)
+
+    log.info(
+        "Terminé en %.1fs — %d taggé(s), %d inchangé(s), %d non identifié(s), "
+        "%d orphelin(s), %d fichier(s) manquant(s), %d erreur(s)%s",
+        time.time() - started, stats["ok"], stats["skip"], stats["incomplete"],
+        orphans, stats["missing"], stats["error"],
+        "  [DRY-RUN, rien écrit]" if cfg.dry_run else "")
+    return 1 if stats["error"] or stats["missing"] else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Tagger m4b/mp3 depuis Audiobookshelf")
+    parser.add_argument("--once", action="store_true", help="une seule passe puis sortie")
+    parser.add_argument("--dry-run", action="store_true", help="n'écrit rien")
+    parser.add_argument("--force", action="store_true", help="ignore le cache d'état")
+    parser.add_argument("--item", action="append", default=[], help="id d'item ABS (répétable)")
+    parser.add_argument("--library", action="append", default=[], help="nom ou id de bibliothèque")
+    parser.add_argument("--no-triage", action="store_true",
+                        help="désactive le tag/déplacement des non identifiés et orphelins")
+    args = parser.parse_args()
+
+    cfg = Config.from_env()
+    if args.dry_run:
+        cfg.dry_run = True
+    if args.force:
+        cfg.force = True
+    if args.item:
+        cfg.only_items = args.item
+    if args.library:
+        cfg.libraries = args.library
+    if args.once:
+        cfg.interval = 0
+    if args.no_triage:
+        cfg.on_incomplete = "none"
+        cfg.orphan_action = "none"
+        cfg.tag_incomplete_files = True
+
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level, logging.INFO),
+        format="%(asctime)s  %(levelname)-7s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        stream=sys.stdout,
+    )
+
+    errors = cfg.validate()
+    if errors:
+        for e in errors:
+            log.error("Configuration : %s", e)
+        return 2
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    log.info("abs-m4b-tagger — serveur %s", cfg.abs_url)
+    if cfg.path_map:
+        for src, dst in cfg.path_map:
+            log.info("Mapping : %s  ->  %s", src, dst)
+    else:
+        log.warning("PATH_MAP vide : les chemins ABS doivent être identiques dans ce conteneur.")
+    if cfg.on_incomplete != "none":
+        log.info("Livres non identifiés : action=%s, critères=%s, tag ABS=« %s »",
+                 cfg.on_incomplete, ",".join(cfg.incomplete_checks), cfg.incomplete_tag)
+    if cfg.orphan_action != "none":
+        log.info("Orphelins disque : action=%s, dossier de tri=%s",
+                 cfg.orphan_action, cfg.unmatched_dir)
+
+    rc = 0
+    while True:
+        rc = run_once(cfg)
+        if cfg.interval <= 0 or _STOP:
+            break
+        log.info("Prochaine passe dans %d s", cfg.interval)
+        for _ in range(cfg.interval):
+            if _STOP:
+                break
+            time.sleep(1)
+        if _STOP:
+            break
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
