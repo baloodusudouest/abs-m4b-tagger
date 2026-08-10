@@ -73,7 +73,7 @@ def transfer(src: str, dst: str, action: str, overwrite: bool,
     if os.path.exists(dst) and not overwrite and _same_file(src, dst, action):
         return "ignore"
     if dry_run:
-        log.info("      [dry-run] %s -> %s", action, dst)
+        log.debug("      [dry-run] %s -> %s", action, dst)
         return "copie"
 
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -323,6 +323,9 @@ def export_item(cfg, meta, files: list, cover_bytes: bytes, cover_mime: str,
                                       cfg.export_max_component,
                                       cfg.export_collapse_spaces)
         dst = os.path.join(dest_dir, name)
+        if cfg.export_max_path and len(dst) > cfg.export_max_path:
+            log.warning("      chemin de %d caractères, au-delà de la limite Windows : %s",
+                        len(dst), dst)
         inside = os.path.normpath(path).startswith(os.path.normpath(root) + os.sep)
         result = transfer(path, dst, cfg.export_action,
                           cfg.export_overwrite, cfg.dry_run)

@@ -28,7 +28,6 @@ PLACEHOLDER_RE = re.compile(r"\{([a-z0-9_]+)\}")
 
 # Caractères interdits sous Windows/SMB, et leur remplacement
 CHAR_MAP = {
-    ":": " -",
     "/": "-",
     "\\": "-",
     "|": "-",
@@ -163,6 +162,10 @@ def sanitize_component(name: str, max_len: int = 180,
                        collapse_spaces: bool = False) -> str:
     """Rend un nom de dossier ou de fichier compatible Windows/SMB/DSM."""
     name = unicodedata.normalize("NFC", str(name or ""))
+    # Les caractères simplement supprimés (? * < >) emportent l'espace qui les
+    # précède, sinon « qu'est-ce ? Le » deviendrait « qu'est-ce  Le ».
+    name = re.sub(r" ?[?*<>]", "", name)
+    name = re.sub(r"\s*:\s*", " - ", name)     # « Tome 1 : la fin » -> « Tome 1 - la fin »
     for src, dst in CHAR_MAP.items():
         name = name.replace(src, dst)
     name = "".join(c for c in name if ord(c) >= 32)

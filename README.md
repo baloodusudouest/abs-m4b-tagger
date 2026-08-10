@@ -83,6 +83,44 @@ du `Dockerfile` et démarre le conteneur.
 
 Active **GitOps updates** si tu veux que Portainer redéploie automatiquement à chaque push.
 
+### Erreur « failed to read dockerfile »
+
+```
+compose build operation failed: failed to solve: failed to read dockerfile:
+open /volume1/@docker/tmp/buildkit-mount…/Dockerfile: no such file or directory
+```
+
+Ce message signifie que le stack a été créé via **Web editor**. Ce mode n'envoie que le
+YAML collé : il n'existe aucun contexte de build, donc `build: .` ne trouve pas de
+`Dockerfile`. Trois solutions.
+
+**1. Méthode Repository (recommandée).** Portainer clone le dépôt, le `Dockerfile` est donc
+présent. `Stacks → Add stack → Repository`, Compose path `docker-compose.yml`.
+
+**2. Image GHCR.** Après le premier passage de GitHub Actions, utilise
+`docker-compose.ghcr.yml` avec `IMAGE=ghcr.io/<compte>/abs-m4b-tagger:latest`. Pense à
+rendre le package public, sinon Portainer devra s'authentifier.
+
+**3. Construction manuelle puis Web editor.** En SSH :
+
+```bash
+cd /volume1/docker/abs-tagger
+docker build -t abs-m4b-tagger:local .
+```
+
+puis colle `docker-compose.webeditor.yml` dans l'éditeur web (il référence l'image sans la
+construire).
+
+### Pièges de syntaxe dans l'éditeur web
+
+- **Toujours guillemeter les valeurs de `environment`.** `ABS_VERIFY_SSL: true` est un
+  booléen YAML, pas une chaîne, et Compose peut le rejeter. Écrire `"true"`.
+- Une clé vide (`ABS_LIBRARIES:`) vaut `null` et non `""` : écrire `ABS_LIBRARIES: ""`.
+- `user: 1026:101` doit être guillemeté : `user: "1026:101"`.
+- Vérifier les accolades parasites dans les volumes : `…/config}:/config` crée un dossier
+  nommé `config}`.
+
+
 ### Les trois réglages critiques
 
 | Réglage | À vérifier |
@@ -334,6 +372,46 @@ fichier si le nommage a changé. Rien n'est recopié ni dupliqué.
 
 
 
+### Nettoyage de la liste d'auteurs
+
+Les métadonnées Audible françaises créditent régulièrement traducteurs et narrateurs dans
+le champ *auteurs*, et **l'ordre varie d'un livre à l'autre**. Sans traitement, deux tomes
+d'une même série atterrissent dans deux dossiers distincts :
+
+```
+Lucinda Riley, Marie-Axelle de la Rochefoucauld - traducteur/Les sept sœurs/…
+Marie-Axelle de la Rochefoucauld - traductrice, Lucinda Riley/Les sept sœurs/…
+```
+
+Trois traitements sont appliqués avant tout nommage, dans cet ordre :
+
+1. `AUTHOR_EXCLUDE` retire les noms contenant une mention de rôle (`traducteur`,
+   `narrateur`, `lu par`, `préface`…). La liste est une suite de motifs séparés par des
+   virgules, recherchés sans tenir compte de la casse.
+2. `AUTHOR_DROP_NARRATORS` retire les personnes déjà présentes dans la liste des
+   narrateurs — utile quand le rôle n'est pas mentionné dans le nom.
+3. `AUTHOR_SORT` trie ce qui reste, ce qui garantit un dossier identique quel que soit
+   l'ordre renvoyé par l'API.
+
+Filet de sécurité : si les règles supprimaient **tous** les auteurs, la liste d'origine est
+conservée intacte. Les co-auteurs légitimes (`Christopher Golden, Dirk Maggs`) sont
+préservés. Le nettoyage vaut aussi pour les tags `aART` et `©ART` écrits dans les fichiers.
+
+### Longueur des chemins
+
+Un titre long produit vite un chemin de plus de 255 caractères, inaccessible depuis Windows
+via SMB. `EXPORT_MAX_PATH` (défaut 255) déclenche un avertissement dans le journal sans
+rien tronquer. Pour raccourcir, réduis `EXPORT_MAX_COMPONENT` (défaut 180) ou allège le
+gabarit, par exemple en retirant `<{serie} {serie_num}]>` du nom de dossier.
+
+### Grandes bibliothèques
+
+Avec `TRUST_UPDATED_AT=true` (défaut), un livre dont l'horodatage `updatedAt` n'a pas bougé
+côté Audiobookshelf est écarté **avant** le téléchargement de sa pochette. Sur plusieurs
+milliers de livres, cela supprime autant de requêtes HTTP par passe. Mettre `false` force
+la vérification complète par empreinte à chaque fois.
+
+
 ### Région
 
 `{region}` vaut `EXPORT_REGION` (défaut `us`). Avec `EXPORT_REGION=auto`, elle est déduite
@@ -441,6 +519,11 @@ de la langue du livre : français → `fr`, anglais → `us`, allemand → `de`,
 | `EXPORT_COLLAPSE_SPACES` | `false` | Réduire les espaces multiples |
 | `EXPORT_MAX_COMPONENT` | `180` | Longueur max d'un dossier ou fichier |
 | `EXPORT_PRUNE_STALE` | `true` | Supprimer les fichiers obsolètes laissés par un renommage |
+| `EXPORT_MAX_PATH` | `255` | Avertir au-delà de cette longueur totale de chemin |
+| `AUTHOR_EXCLUDE` | voir ci-dessus | Motifs écartant un faux auteur (traducteur, narrateur…) |
+| `AUTHOR_DROP_NARRATORS` | `true` | Retirer des auteurs les personnes listées comme narrateurs |
+| `AUTHOR_SORT` | `true` | Trier les auteurs pour un nommage stable |
+| `TRUST_UPDATED_AT` | `true` | Sauter un livre dont `updatedAt` n'a pas changé |
 
 Arguments CLI : `--once`, `--dry-run`, `--force`, `--item <id>`, `--library <nom>`, `--no-triage`.
 
@@ -544,8 +627,9 @@ abs-m4b-tagger/
 │   ├── naming.py        # moteur de gabarits et assainissement des noms
 │   └── export.py        # export des livres validés
 ├── Dockerfile
-├── docker-compose.yml        # stack Portainer, build depuis le dépôt
-├── docker-compose.ghcr.yml   # stack Portainer, image pré-construite
+├── docker-compose.yml            # Portainer « Repository », build depuis le dépôt
+├── docker-compose.ghcr.yml       # Portainer, image pré-construite (GHCR)
+├── docker-compose.webeditor.yml  # Portainer « Web editor », image déjà présente
 ├── .env.example
 ├── requirements.txt
 └── LICENSE

@@ -1,0 +1,91 @@
+# ---------------------------------------------------------------------------
+# abs-m4b-tagger — Portainer « Web editor »
+#
+# Cette variante ne construit RIEN : l'éditeur web ne dispose d'aucun contexte
+# de build, donc `build:` échoue avec « failed to read dockerfile ».
+# L'image doit exister au préalable :
+#
+#   a) publiée sur GHCR par GitHub Actions       -> IMAGE=ghcr.io/<compte>/abs-m4b-tagger:latest
+#   b) construite une fois en SSH sur le NAS     -> IMAGE=abs-m4b-tagger:local
+#         cd /volume1/docker/abs-tagger && docker build -t abs-m4b-tagger:local .
+#
+# Toutes les valeurs sont entre guillemets : Docker Compose exige des chaînes
+# dans `environment`, et `true` sans guillemets est un booléen YAML.
+# ---------------------------------------------------------------------------
+
+services:
+  abs-m4b-tagger:
+    image: "${IMAGE:-abs-m4b-tagger:local}"
+    container_name: abs-m4b-tagger
+    restart: unless-stopped
+
+    # UID:GID pouvant écrire dans la bibliothèque (en SSH : `id mon_utilisateur`)
+    user: "1026:101"
+
+    environment:
+      TZ: "Europe/Paris"
+
+      # ---------------- Connexion Audiobookshelf ----------------
+      ABS_URL: "http://192.168.1.90:13378"
+      ABS_TOKEN: "REGENERE-CETTE-CLE"
+      ABS_VERIFY_SSL: "true"
+
+      # ---------------- Correspondance des chemins ----------------
+      # À GAUCHE : le chemin tel que le voit AUDIOBOOKSHELF.
+      #   Si ABS tourne en conteneur avec -v /volume1/Media:/audiobooks,
+      #   alors la valeur de gauche est "/audiobooks", PAS "/volume1/Media".
+      #   Vérifie dans ABS : Paramètres > Bibliothèques > chemin du dossier.
+      # À DROITE : le chemin dans CE conteneur, soit /Media (voir volumes).
+      PATH_MAP: "/volume1/Media:/Media"
+
+      # ---------------- Fonctionnement ----------------
+      INTERVAL: "3600"
+      DRY_RUN: "true"          # repasser à "false" une fois les chemins validés
+      FORCE: "false"
+      LOG_LEVEL: "INFO"
+      STATE_FILE: "/config/state.json"
+      ABS_LIBRARIES: ""
+
+      # ---------------- Tags écrits dans les fichiers ----------------
+      WRITE_COVER: "true"
+      COVER_MAX_PX: "1200"
+      STRIP_HTML: "true"
+      WRITE_COMMENT: "true"
+      TRACK_TITLE_MODE: "filename"
+      SYNC_CHAPTERS: "false"
+      WRITE_SIDECARS: "false"
+
+      # ---------------- Livres présents dans ABS mais non identifiés ----------------
+      INCOMPLETE_CHECKS: "identifier,author,cover"
+      ON_INCOMPLETE: "tag"
+      INCOMPLETE_TAG: "a-identifier"
+      REMOVE_TAG_WHEN_COMPLETE: "true"
+      TAG_INCOMPLETE_FILES: "false"
+
+      # ---------------- Fichiers sur le disque absents d'ABS ----------------
+      # ORPHAN_SCAN_DIRS = la RACINE DE LA BIBLIOTHÈQUE à inspecter,
+      # surtout pas le dossier de tri : c'est là qu'on cherche les fichiers
+      # qu'Audiobookshelf ne connaît pas.
+      ORPHAN_ACTION: "report"
+      ORPHAN_SCAN_DIRS: "/Media/Bibliothèque/AudioBooks"
+      ORPHAN_MIN_AGE_MIN: "30"
+      UNMATCHED_DIR: "/Media/Bibliothèque/a-trier"
+
+      # ---------------- Export des livres validés ----------------
+      EXPORT_ACTION: "hardlink"
+      EXPORT_DIR: "/Media/Bibliothèque/Livres audio Plex"
+      EXPORT_DIR_TEMPLATE: "{auteur}/<{serie}/><{annee} - >{titre}<  [{serie} {serie_num}]>< {asin}>< [{region}]>"
+      EXPORT_FILE_TEMPLATE: "{titre}"
+      EXPORT_SIDECARS: "cover,metadata,desc,reader"
+      EXPORT_REGION: "fr"
+      EXPORT_OVERWRITE: "false"
+      EXPORT_COLLAPSE_SPACES: "false"
+      EXPORT_MAX_COMPONENT: "180"
+      EXPORT_PRUNE_STALE: "true"
+
+    volumes:
+      - "/volume1/docker/abs-tagger/config:/config"
+
+      # Un SEUL montage parent : indispensable pour les liens physiques.
+      # PATH_MAP, ORPHAN_SCAN_DIRS, EXPORT_DIR et UNMATCHED_DIR pointent tous dessous.
+      - "/volume1/Media:/Media"

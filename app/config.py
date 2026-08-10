@@ -105,6 +105,16 @@ class Config:
     export_collapse_spaces: bool = False
     export_max_component: int = 180
     export_prune_stale: bool = True      # purger les fichiers obsolètes après renommage
+    export_max_path: int = 255           # longueur totale au-delà de laquelle on alerte
+
+    # --- Nettoyage de la liste d'auteurs ---
+    author_exclude: list = field(default_factory=lambda: [
+        "traducteur", "traductrice", "traduction", "narrateur", "narratrice",
+        "lu par", "adaptation", "illustrateur", "illustratrice", "postface", "préface",
+    ])
+    author_drop_narrators: bool = True
+    author_sort: bool = True
+    trust_updated_at: bool = True        # sauter un livre dont updatedAt n'a pas bougé
 
     log_level: str = "INFO"
 
@@ -156,6 +166,14 @@ class Config:
             export_collapse_spaces=_bool("EXPORT_COLLAPSE_SPACES", False),
             export_max_component=_int("EXPORT_MAX_COMPONENT", 180),
             export_prune_stale=_bool("EXPORT_PRUNE_STALE", True),
+            export_max_path=_int("EXPORT_MAX_PATH", 255),
+            author_exclude=_list("AUTHOR_EXCLUDE", [
+                "traducteur", "traductrice", "traduction", "narrateur", "narratrice",
+                "lu par", "adaptation", "illustrateur", "illustratrice",
+                "postface", "préface"]),
+            author_drop_narrators=_bool("AUTHOR_DROP_NARRATORS", True),
+            author_sort=_bool("AUTHOR_SORT", True),
+            trust_updated_at=_bool("TRUST_UPDATED_AT", True),
             log_level=os.environ.get("LOG_LEVEL", "INFO").strip().upper(),
         )
 
@@ -206,6 +224,13 @@ class Config:
                 errors.append("EXPORT_DIR_TEMPLATE ne peut pas être vide")
             if not self.export_file_template.strip():
                 errors.append("EXPORT_FILE_TEMPLATE ne peut pas être vide")
+            for label, tpl in (("EXPORT_DIR_TEMPLATE", self.export_dir_template),
+                               ("EXPORT_FILE_TEMPLATE", self.export_file_template)):
+                if "{" not in tpl:
+                    errors.append(
+                        f"{label} ne contient aucune variable : « {tpl} ». Les variables "
+                        f"s'écrivent entre accolades, par exemple {{titre}}. Tous les "
+                        f"livres porteraient sinon le même nom.")
             for root in self.library_roots:
                 if self.export_dir == root or self.export_dir.startswith(root + "/"):
                     errors.append(
