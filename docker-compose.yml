@@ -32,7 +32,7 @@ services:
 
       # ---------------- Correspondance des chemins ----------------
       # <chemin vu par Audiobookshelf>:<chemin monté ici>
-      PATH_MAP: "${PATH_MAP:-/audiobooks:/livres}"
+      PATH_MAP: "${PATH_MAP:-/audiobooks:/media/livres}"
 
       # ---------------- Fonctionnement ----------------
       INTERVAL: "${INTERVAL:-3600}"
@@ -48,7 +48,7 @@ services:
       STRIP_HTML: "${STRIP_HTML:-true}"
       WRITE_COMMENT: "${WRITE_COMMENT:-true}"
       TRACK_TITLE_MODE: "${TRACK_TITLE_MODE:-filename}"
-      SYNC_CHAPTERS: "${SYNC_CHAPTERS:-false}"
+      SYNC_CHAPTERS: "${SYNC_CHAPTERS:-false}"   # ffmpeg est inclus dans l'image
       WRITE_SIDECARS: "${WRITE_SIDECARS:-false}"
 
       # ---------------- Livres présents dans ABS mais non identifiés ----------------
@@ -60,11 +60,30 @@ services:
 
       # ---------------- Fichiers sur le disque absents d'ABS ----------------
       ORPHAN_ACTION: "${ORPHAN_ACTION:-report}"
-      ORPHAN_SCAN_DIRS: "${ORPHAN_SCAN_DIRS:-/livres}"
+      ORPHAN_SCAN_DIRS: "${ORPHAN_SCAN_DIRS:-/media/livres}"
       ORPHAN_MIN_AGE_MIN: "${ORPHAN_MIN_AGE_MIN:-30}"
-      UNMATCHED_DIR: "${UNMATCHED_DIR:-/a-trier}"
+      UNMATCHED_DIR: "${UNMATCHED_DIR:-/media/a-trier}"
+
+      # ---------------- Export des livres validés ----------------
+      # Seuls les livres complets (non signalés par le triage) sont exportés.
+      EXPORT_ACTION: "${EXPORT_ACTION:-hardlink}"          # none | copy | move | hardlink | symlink
+      MOVE_CLEANUP_SOURCE: "${MOVE_CLEANUP_SOURCE:-true}"   # supprimer le dossier source vidé
+      AFTER_MOVE: "${AFTER_MOVE:-keep}"               # keep | remove (retire l'item de la base ABS)
+      EXPORT_DIR: "${EXPORT_DIR:-/media/AudioBooks/Audible}"
+      EXPORT_DIR_TEMPLATE: "${EXPORT_DIR_TEMPLATE:-{auteur}/<{serie}/><{annee} - >{titre}<  [{serie} {serie_num}]>< {asin}>< [{region}]>}"
+      EXPORT_FILE_TEMPLATE: "${EXPORT_FILE_TEMPLATE:-{titre}}"
+      EXPORT_SIDECARS: "${EXPORT_SIDECARS:-cover,metadata,desc,reader}"
+      EXPORT_REGION: "${EXPORT_REGION:-us}"            # code fixe, ou "auto" d'après la langue
+      EXPORT_OVERWRITE: "${EXPORT_OVERWRITE:-false}"
+      EXPORT_COLLAPSE_SPACES: "${EXPORT_COLLAPSE_SPACES:-false}"
+      EXPORT_MAX_COMPONENT: "${EXPORT_MAX_COMPONENT:-180}"
+      EXPORT_PRUNE_STALE: "${EXPORT_PRUNE_STALE:-true}"
 
     volumes:
       - "${CONFIG_DIR:-/volume1/docker/abs-tagger/config}:/config"
-      - "${LIBRARY_DIR:-/volume1/media/livres}:/livres"
-      - "${TRIAGE_DIR:-/volume1/media/a-trier}:/a-trier"
+
+      # IMPORTANT pour EXPORT_ACTION=hardlink : un SEUL montage parent, afin que
+      # la source et la destination soient sur le même système de fichiers.
+      # Adapte ensuite PATH_MAP, ORPHAN_SCAN_DIRS, EXPORT_DIR et UNMATCHED_DIR
+      # pour qu'ils pointent tous sous /media.
+      - "${MEDIA_DIR:-/volume1/media}:/media"

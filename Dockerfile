@@ -8,9 +8,12 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Europe/Paris
 
+# ffmpeg + ffprobe : requis par SYNC_CHAPTERS (lecture et reecriture des chapitres)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg tzdata \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && ffmpeg -version > /dev/null \
+ && ffprobe -version > /dev/null
 
 WORKDIR /app
 COPY requirements.txt .
