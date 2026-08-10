@@ -195,6 +195,185 @@ manquants) et fichiers orphelins.
 
 ---
 
+## Export des livres validés
+
+Une fois un livre taggé **et jugé complet** par le triage, ses fichiers peuvent être copiés
+vers une seconde bibliothèque au nommage strict, avec la pochette et les métadonnées ABS.
+Les livres signalés comme non identifiés ne sont jamais exportés : la bibliothèque de
+destination ne contient donc que du propre.
+
+Activation : `EXPORT_ACTION=hardlink` (ou `copy`, `move`, `symlink`) et `EXPORT_DIR`
+pointant vers la destination.
+
+### Gabarits de nommage
+
+| Syntaxe | Effet |
+|---|---|
+| `{variable}` | Remplacée par sa valeur |
+| `<...>` | Bloc optionnel : affiché seulement si **toutes** ses variables sont renseignées |
+| `/` | Séparateur de dossiers |
+
+Variables disponibles :
+
+`{auteur}` `{auteur1}` `{auteur_lf}` (Nom, Prénom) `{titre}` `{titre_sans_prefixe}`
+`{sous_titre}` `{serie}` `{serie_num}` `{serie_num2}` (01, 02…) `{narrateur}` `{narrateur1}`
+`{annee}` `{editeur}` `{asin}` `{isbn}` `{langue}` `{genre}` `{genres}` `{region}`
+`{piste}` `{piste2}` `{total}` `{ext}`
+
+Le gabarit par défaut reproduit la convention du guide Plex :
+
+```
+EXPORT_DIR_TEMPLATE={auteur}/<{serie}/><{annee} - >{titre}<  [{serie} {serie_num}]>< {asin}>< [{region}]>
+EXPORT_FILE_TEMPLATE={titre}
+```
+
+Résultat :
+
+```
+J.K. Rowling/
+└── Le Monde des sorciers/
+    └── 2017 - Harry Potter à l'École des Sorciers  [Le Monde des sorciers 1] B06Y64F73B [us]/
+        ├── Harry Potter à l'École des Sorciers.m4b
+        ├── cover.jpg
+        ├── metadata.json
+        ├── desc.txt
+        └── reader.txt
+```
+
+Les blocs optionnels absorbent proprement les champs manquants : un livre hors série sans
+ASIN donne simplement `Bernard Werber/1991 - Les Fourmis`, sans crochets vides ni tirets
+orphelins. Pour un livre en plusieurs fichiers, ` - {piste2}` est ajouté automatiquement au
+nom de fichier s'il ne contient pas déjà `{piste}`.
+
+### Mode lien physique (`EXPORT_ACTION=hardlink`) — recommandé
+
+Un lien physique n'est pas une copie : c'est un **second nom pour le même contenu sur le
+disque**. Les deux emplacements pointent vers le même inode.
+
+- **Un seul exemplaire de données.** Un livre de 800 Mo visible dans deux bibliothèques
+  n'occupe que 800 Mo. Windows et File Station afficheront la taille aux deux endroits,
+  mais l'espace n'est compté qu'une fois par le volume.
+- **Modification répercutée.** Écrire les tags avec mutagen modifie le fichier *en place* :
+  les deux chemins voient immédiatement le changement, même quand la pochette fait grossir
+  le fichier. Aucune resynchronisation n'est nécessaire.
+- **Déplaçable librement.** Renommer ou déplacer l'un des deux chemins **sur le même
+  volume** ne casse rien : un déplacement intra-volume n'est qu'un changement d'étiquette.
+- **Suppression sans risque.** Supprimer un des deux noms ne supprime pas les données ;
+  elles ne disparaissent que lorsque le dernier lien est supprimé.
+
+Deux limites réelles :
+
+**Le même volume est obligatoire.** `/volume1` et `/volume2` sont des systèmes de fichiers
+distincts : un lien physique entre les deux est impossible, et un déplacement de l'un vers
+l'autre est en réalité une copie qui rompt le lien. Le programme le signale au démarrage et
+bascule sur une copie plutôt que d'échouer.
+
+**Certains outils cassent le lien sans prévenir.** Un logiciel qui écrit un fichier
+temporaire puis le remplace (ffmpeg, donc `SYNC_CHAPTERS`, mais aussi beaucoup d'éditeurs)
+crée un nouvel inode : les deux chemins deviennent alors deux fichiers indépendants. Le
+programme vérifie l'inode à chaque passe et **rétablit automatiquement le lien** si besoin.
+
+### Configuration Docker indispensable
+
+Les liens physiques ne fonctionnent qu'à l'intérieur d'un même système de fichiers, **tel
+que vu par le conteneur**. Il faut donc monter **un seul volume parent** contenant à la
+fois la bibliothèque source et la destination :
+
+```yaml
+volumes:
+  - /volume1/media:/media          # ✅ un seul montage parent
+```
+
+```
+PATH_MAP=/audiobooks:/media/livres
+ORPHAN_SCAN_DIRS=/media/livres
+EXPORT_DIR=/media/AudioBooks/Audible
+UNMATCHED_DIR=/media/a-trier
+```
+
+À éviter — deux montages séparés donnent des copies silencieuses même si tout est sur
+`/volume1` :
+
+```yaml
+volumes:
+  - /volume1/media/livres:/livres              # ❌
+  - /volume1/media/AudioBooks:/export          # ❌
+```
+
+Au démarrage, le programme compare les systèmes de fichiers et affiche soit
+`source et destination sur le même volume, aucun espace supplémentaire consommé`, soit un
+avertissement explicite.
+
+
+### Mode déplacement (`EXPORT_ACTION=move`)
+
+Les fichiers **quittent** la bibliothèque Audiobookshelf. C'est le mode « chaîne
+d'import » : ABS sert de zone de préparation, la bibliothèque exportée devient la
+référence. Trois conséquences à connaître avant de l'activer.
+
+**Le dossier source est supprimé** une fois ses fichiers audio partis, si
+`MOVE_CLEANUP_SOURCE=true` (défaut). La suppression n'a lieu que si le dossier ne contient
+plus que des résidus connus — `cover.jpg`, `metadata.json`, `desc.txt`, `reader.txt`,
+`book.nfo`, `@eaDir`. **Le moindre fichier inattendu annule la suppression** et le dossier
+est conservé avec un message dans les logs.
+
+**Les items restent dans Audiobookshelf, marqués comme manquants.** C'est le
+comportement par défaut (`AFTER_MOVE=keep`) : tu gardes l'historique de lecture et tu peux
+purger quand tu veux via `Paramètres → Bibliothèques → Supprimer les éléments manquants`.
+Avec `AFTER_MOVE=remove`, l'item est retiré de la base ABS dès le déplacement — **aucun
+fichier n'est supprimé**, seulement l'entrée en base, mais la progression de lecture est
+perdue.
+
+**Les corrections ultérieures restent possibles.** Si tu modifies les métadonnées dans ABS
+après le déplacement, la passe suivante retrouve le fichier à son emplacement exporté grâce
+au chemin mémorisé dans `state.json`, réécrit ses tags sur place, et renomme dossier et
+fichier si le nommage a changé. Rien n'est recopié ni dupliqué.
+
+> Si tu purges les items manquants dans ABS, ce lien est rompu : les livres concernés ne
+> seront plus jamais retaggés automatiquement. Purge donc en connaissance de cause.
+
+
+
+### Région
+
+`{region}` vaut `EXPORT_REGION` (défaut `us`). Avec `EXPORT_REGION=auto`, elle est déduite
+de la langue du livre : français → `fr`, anglais → `us`, allemand → `de`, etc.
+
+### Fichiers annexes
+
+`EXPORT_SIDECARS` accepte, séparés par des virgules :
+
+| Valeur | Fichier produit |
+|---|---|
+| `cover` | `cover.jpg` (pochette d'origine, non redimensionnée) |
+| `metadata` | `metadata.json` au format Audiobookshelf, réimportable |
+| `desc` | `desc.txt` (résumé) |
+| `reader` | `reader.txt` (narrateur) |
+| `nfo` | `book.nfo` (Plex / Jellyfin) |
+
+### Comportement
+
+- **Idempotent** : un fichier déjà à jour n'est pas retransféré. En mode lien physique, « à
+  jour » signifie *même inode*, ce qui permet de détecter et réparer un lien rompu.
+- **Auto-réparateur** : si le dossier d'export est supprimé ou un fichier manque, la passe
+  suivante le recrée, même si les métadonnées ABS n'ont pas changé.
+- **Renommage suivi** : si tu changes le gabarit ou si les métadonnées ABS évoluent, l'ancien
+  dossier est déplacé vers le nouveau nom plutôt que dupliqué, et les dossiers parents vidés
+  sont supprimés.
+- **Noms compatibles Windows/SMB** : `:` devient ` -`, `/` et `\` deviennent `-`, `?` `*`
+  `<` `>` sont retirés, `"` devient `'`. Les points et espaces en fin de nom sont supprimés
+  (donc `Rowling, J.K.` donne `Rowling, J.K`), les composants sont tronqués à
+  `EXPORT_MAX_COMPONENT` caractères et les noms réservés (`CON`, `PRN`…) sont préfixés.
+- **Espaces doubles conservés** par défaut, pour coller exactement à la convention du guide
+  Plex. Mets `EXPORT_COLLAPSE_SPACES=true` pour les réduire.
+- `EXPORT_DIR` ne doit pas se trouver dans la bibliothèque source — le programme refuse de
+  démarrer sinon, pour éviter qu'Audiobookshelf ne rescanne les copies.
+- `hardlink` n'occupe aucun espace supplémentaire, mais impose que source et destination
+  soient sur le **même volume** ; sinon le programme bascule automatiquement sur une copie.
+
+
+---
+
 ## Variables d'environnement
 
 ### Connexion et chemins
@@ -228,7 +407,7 @@ manquants) et fichiers orphelins.
 | `STRIP_HTML` | `true` | Nettoie le HTML des résumés ABS |
 | `WRITE_COMMENT` | `true` | Écrit aussi le résumé dans `COMMENT` |
 | `TRACK_TITLE_MODE` | `filename` | Titre de piste des livres multi-fichiers : `filename`, `chapter` ou `title` |
-| `SYNC_CHAPTERS` | `false` | Réécrit les chapitres via ffmpeg (voir avertissement) |
+| `SYNC_CHAPTERS` | `false` | Écrit les chapitres ABS dans le fichier (ffmpeg inclus dans l'image) |
 | `WRITE_SIDECARS` | `false` | Génère `cover.jpg` / `desc.txt` / `reader.txt` |
 
 ### Triage
@@ -244,6 +423,24 @@ manquants) et fichiers orphelins.
 | `ORPHAN_SCAN_DIRS` | `/livres` | Racines à scanner |
 | `ORPHAN_MIN_AGE_MIN` | `30` | Âge minimum d'un fichier pour être considéré orphelin |
 | `UNMATCHED_DIR` | `/a-trier` | Dossier de tri manuel, hors bibliothèque |
+
+### Export des livres validés
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `EXPORT_ACTION` | `hardlink` | `none`, `copy`, `move`, `hardlink` ou `symlink` |
+| `MOVE_CLEANUP_SOURCE` | `true` | Supprimer le dossier source vidé (résidus connus uniquement) |
+| `AFTER_MOVE` | `keep` | `keep` (item ABS conservé, marqué manquant) ou `remove` (retiré de la base) |
+| `MEDIA_DIR` | `/volume1/media` | Volume parent hôte monté sur `/media` |
+| `EXPORT_DIR` | `/media/AudioBooks/Audible` | Destination, vue par le conteneur |
+| `EXPORT_DIR_TEMPLATE` | voir ci-dessus | Gabarit d'arborescence |
+| `EXPORT_FILE_TEMPLATE` | `{titre}` | Gabarit du nom de fichier |
+| `EXPORT_SIDECARS` | `cover,metadata,desc,reader` | Annexes à déposer |
+| `EXPORT_REGION` | `us` | Code région, ou `auto` d'après la langue |
+| `EXPORT_OVERWRITE` | `false` | Recopier même si le fichier existe déjà |
+| `EXPORT_COLLAPSE_SPACES` | `false` | Réduire les espaces multiples |
+| `EXPORT_MAX_COMPONENT` | `180` | Longueur max d'un dossier ou fichier |
+| `EXPORT_PRUNE_STALE` | `true` | Supprimer les fichiers obsolètes laissés par un renommage |
 
 Arguments CLI : `--once`, `--dry-run`, `--force`, `--item <id>`, `--library <nom>`, `--no-triage`.
 
@@ -289,9 +486,8 @@ priorité des métadonnées`, laisse `metadata.json` (ou la base) **au-dessus** 
 fichiers audio. Sinon ABS relit ce que tu viens d'écrire et peut écraser des champs corrigés
 à la main.
 
-**`SYNC_CHAPTERS`.** L'écriture des chapitres passe par ffmpeg en copie de flux : le fichier
-est reconstruit, son inode change et ABS le rescanne. Rapide (pas de réencodage) mais ça
-touche tout le fichier, contrairement aux tags. Ne s'applique qu'aux livres d'un seul fichier.
+**`SYNC_CHAPTERS`.** ffmpeg et ffprobe sont inclus dans l'image : rien à installer, il
+suffit de passer `SYNC_CHAPTERS=true`. Voir la section dédiée plus bas.
 
 **Cache d'état.** `config/state.json` mémorise une empreinte des métadonnées de chaque livre ;
 une passe suivante ne réécrit que ce qui a changé dans ABS. Utilise `FORCE=true` après avoir
@@ -299,6 +495,37 @@ modifié la configuration des tags.
 
 **Déplacements.** Commence toujours par `ORPHAN_ACTION=report` et `ON_INCOMPLETE=tag`. Ne
 passe à `move` qu'une fois `a-traiter.json` relu et validé.
+
+---
+
+## Synchronisation des chapitres
+
+ffmpeg et ffprobe sont **inclus dans l'image** (le `Dockerfile` vérifie leur présence à la
+construction). Pour activer la fonction : `SYNC_CHAPTERS=true`. Au démarrage, le programme
+affiche la version détectée, ou une erreur explicite si le binaire manque.
+
+Les chapitres définis dans Audiobookshelf sont écrits dans le fichier via un remux en copie
+de flux (`-c copy`) : aucun réencodage, donc rapide, et la qualité audio est intacte.
+
+**Désactivé par défaut, volontairement.** Contrairement aux tags qui ne touchent que
+l'atome `moov`, un remux **reconstruit tout le fichier**. Conséquences :
+
+- Sur un m4b de 800 Mo, c'est 800 Mo lus et réécrits — quelques secondes en local, mais
+  rien à voir avec l'écriture d'un tag.
+- L'inode change, donc Audiobookshelf rescanne le fichier et **un lien physique existant
+  est rompu**. Le programme le détecte à la passe suivante et rétablit le lien
+  automatiquement.
+- Ne s'applique qu'aux livres constitués d'un **seul fichier**.
+
+Le programme ne remuxe que si nécessaire : les chapitres présents dans le fichier sont
+d'abord lus avec ffprobe et comparés à ceux d'ABS (titres et positions à la seconde près).
+Si tout concorde, ffmpeg n'est pas lancé du tout.
+
+**Pochette embarquée.** Certaines pochettes MP4 refusent de se remuxer (mjpeg mal formé,
+dimensions absentes) et faisaient échouer l'opération. Le programme tente d'abord un remux
+complet ; en cas d'échec, il recommence sans le flux image, et la pochette est de toute
+façon réécrite juste après par le tagger. Vérifié : après remux, `covr` est bien présent.
+
 
 ---
 
@@ -313,7 +540,9 @@ abs-m4b-tagger/
 │   ├── absclient.py     # client API Audiobookshelf
 │   ├── tagger.py        # normalisation + écriture MP4/ID3
 │   ├── chapters.py      # synchronisation des chapitres (ffmpeg)
-│   └── triage.py        # livres non identifiés et fichiers orphelins
+│   ├── triage.py        # livres non identifiés et fichiers orphelins
+│   ├── naming.py        # moteur de gabarits et assainissement des noms
+│   └── export.py        # export des livres validés
 ├── Dockerfile
 ├── docker-compose.yml        # stack Portainer, build depuis le dépôt
 ├── docker-compose.ghcr.yml   # stack Portainer, image pré-construite
