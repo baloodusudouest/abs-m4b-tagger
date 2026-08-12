@@ -89,6 +89,11 @@ class Config:
 
     unmatched_dir: str = "/a-trier"
 
+    # --- Doublons (plusieurs items ABS pour un même livre) ---
+    duplicate_action: str = "report"      # report | move | none
+    duplicate_keys: list = field(default_factory=lambda: ["asin"])
+    duplicate_dir: str = "/a-trier/doublons"
+
     # --- Export des livres validés ---
     export_action: str = "none"          # none | copy | move | hardlink | symlink
     move_cleanup_source: bool = True     # supprimer le dossier source vidé
@@ -150,6 +155,9 @@ class Config:
             orphan_scan_dirs=_list("ORPHAN_SCAN_DIRS"),
             orphan_min_age_min=_int("ORPHAN_MIN_AGE_MIN", 30),
             unmatched_dir=os.environ.get("UNMATCHED_DIR", "/a-trier").rstrip("/"),
+            duplicate_action=os.environ.get("DUPLICATE_ACTION", "report").strip().lower(),
+            duplicate_keys=[k.lower() for k in _list("DUPLICATE_KEYS", ["asin"])],
+            duplicate_dir=os.environ.get("DUPLICATE_DIR", "/a-trier/doublons").rstrip("/"),
             export_action=os.environ.get("EXPORT_ACTION", "none").strip().lower(),
             move_cleanup_source=_bool("MOVE_CLEANUP_SOURCE", True),
             after_move=os.environ.get("AFTER_MOVE", "keep").strip().lower(),
@@ -211,6 +219,25 @@ class Config:
         if "move" in (self.on_incomplete, self.orphan_action) or self.on_incomplete == "both":
             if not self.unmatched_dir:
                 errors.append("UNMATCHED_DIR est obligatoire pour déplacer des livres")
+        if self.duplicate_action not in ("report", "move", "none"):
+            errors.append("DUPLICATE_ACTION doit valoir report, move ou none")
+        if self.duplicate_action != "none":
+            from duplicates import KEY_CHOICES
+            bad = [k for k in self.duplicate_keys if k not in KEY_CHOICES]
+            if bad:
+                errors.append(f"DUPLICATE_KEYS : valeurs inconnues {bad} "
+                              f"(choix : {', '.join(KEY_CHOICES)})")
+            if not self.duplicate_keys:
+                errors.append("DUPLICATE_KEYS ne peut pas être vide")
+        if self.duplicate_action == "move":
+            if not self.duplicate_dir:
+                errors.append("DUPLICATE_DIR est obligatoire quand DUPLICATE_ACTION=move")
+            for root in self.library_roots:
+                if self.duplicate_dir == root or self.duplicate_dir.startswith(root + "/"):
+                    errors.append(
+                        f"DUPLICATE_DIR ({self.duplicate_dir}) est à l'intérieur de la "
+                        f"bibliothèque ({root}) : Audiobookshelf rescannerait les doublons "
+                        f"mis de côté")
         if self.orphan_action != "none" and not self.library_roots:
             errors.append("ORPHAN_SCAN_DIRS (ou PATH_MAP) est requis pour la détection des orphelins")
         if self.export_action not in ("none", "copy", "move", "hardlink", "symlink"):
