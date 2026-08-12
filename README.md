@@ -226,6 +226,67 @@ Garde-fous appliqués :
 Après un déplacement, ABS marque les items concernés comme manquants ; purge-les via
 `Paramètres → Bibliothèques → Supprimer les éléments manquants`.
 
+### C. Le même livre est présent deux fois
+
+Deux items Audiobookshelf qui partagent le même ASIN désignent le même livre : import en
+double, dossier dupliqué lors d'une réorganisation, ou même édition récupérée deux fois sous
+deux noms différents. C'est surtout gênant avec l'export, dont le gabarit contient `{asin}` :
+les deux copies produisent exactement le même chemin cible et se recouvrent silencieusement.
+
+| `DUPLICATE_ACTION` | Effet |
+|---|---|
+| `report` *(défaut)* | Liste les groupes dans les logs et dans `/config/a-traiter.json`. |
+| `move` | Isole **toutes** les copies dans `DUPLICATE_DIR`, une par sous-dossier. |
+| `none` | Désactive la détection. |
+
+`DUPLICATE_KEYS` définit ce qui fait doublon, dans l'ordre de priorité : `asin` (défaut),
+`isbn`, ou `titre` (couple auteur + titre normalisé, utile pour les livres sans identifiant,
+mais nettement plus sujet aux faux positifs). Un item déjà rattaché à un groupe n'est pas
+réexaminé par les clés suivantes.
+
+Contrairement au triage des orphelins, `move` déplace **les deux** copies, pas seulement la
+seconde : l'outil n'a aucun moyen fiable de désigner la bonne. Le but est de te les présenter
+côte à côte pour que tu tranches. Chaque groupe donne :
+
+```
+DUPLICATE_DIR/asin-B0BPTHK8SX/
+├── 3f9a2c11/…/Un soupçon de haine/          <- copie 1, dossier d'origine préservé
+└── 7d1e4b08/…/Un soupcon de haine (copie)/  <- copie 2
+```
+
+Le log affiche taille, durée, nombre de fichiers et formats de chaque copie pour te permettre
+de choisir sans ouvrir les dossiers :
+
+```
+WARNING 1 livre(s) en doublon, soit 2 copie(s) :
+WARNING   ASIN = B0BPTHK8SX — « Un soupçon de haine »
+WARNING     - /media/…/Joe Abercrombie/…  [412.7 Mo, 14h22, 1 fichier(s), m4b]
+WARNING     - /media/…/Abercrombie, Joe/…  [198.3 Mo, 14h20, 24 fichier(s), mp3]
+```
+
+Garde-fous appliqués :
+
+- Le dossier d'un livre n'est déplacé en bloc que s'il ne contient **que** les fichiers de cet
+  item ; sinon seuls les fichiers concernés partent. Les décisions sont toutes prises sur
+  l'état initial du disque, avant le premier déplacement.
+- Deux items ABS pointant sur le **même** dossier ne le déplacent qu'une fois.
+- La détection tourne sur les items réellement inventoriés pendant la passe, y compris ceux
+  que le cache d'état fait sauter — un doublon reste visible à la deuxième exécution.
+- `DUPLICATE_DIR` doit être hors de la bibliothèque ABS, et il est exclu de la détection des
+  orphelins.
+
+Après un déplacement, ABS marque les deux items comme manquants. Une fois ton choix fait,
+remets le dossier retenu dans la bibliothèque et purge le reste via
+`Paramètres → Bibliothèques → Supprimer les éléments manquants`.
+
+Pour un audit seul, sans rien écrire ni déplacer :
+
+```bash
+sudo docker exec abs-m4b-tagger python /app/main.py --duplicates-only
+```
+
+Ce mode force `DRY_RUN`, ignore le cache d'état et désactive tags, export et triage.
+
 ### Rapport
 
 Chaque passe écrit `/config/a-traiter.json` : livres non identifiés (avec les champs
@@ -325,6 +386,7 @@ volumes:
 ```
 PATH_MAP=/audiobooks:/media/livres
 ORPHAN_SCAN_DIRS=/media/livres
+DUPLICATE_ACTION=report
 EXPORT_DIR=/media/AudioBooks/Audible
 UNMATCHED_DIR=/media/a-trier
 ```
@@ -501,6 +563,9 @@ de la langue du livre : français → `fr`, anglais → `us`, allemand → `de`,
 | `ORPHAN_SCAN_DIRS` | `/livres` | Racines à scanner |
 | `ORPHAN_MIN_AGE_MIN` | `30` | Âge minimum d'un fichier pour être considéré orphelin |
 | `UNMATCHED_DIR` | `/a-trier` | Dossier de tri manuel, hors bibliothèque |
+| `DUPLICATE_ACTION` | `report` | `report`, `move` ou `none` |
+| `DUPLICATE_KEYS` | `asin` | Clés de regroupement : `asin`, `isbn`, `titre` |
+| `DUPLICATE_DIR` | `/a-trier/doublons` | Dossier d'isolement des doublons, hors bibliothèque |
 
 ### Export des livres validés
 
