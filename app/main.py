@@ -22,6 +22,7 @@ from absclient import AbsClient, AbsError
 from tagger import AUDIO_EXT, BookMeta, prepare_cover, write_mp3, write_mp4
 import chapters as chapmod
 import triage
+import duplicates as dupmod
 import export as exportmod
 
 log = logging.getLogger("main")
@@ -130,7 +131,7 @@ def handle_incomplete(client, cfg, meta, item, gaps, report) -> None:
 
 
 def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
-                 known_paths: set, report: list) -> str:
+                 known_paths: set, report: list, dup_store: dict) -> str:
     """Retourne 'ok', 'skip', 'incomplete', 'error' ou 'missing'."""
     raw = client.item(item_id)
     meta = BookMeta(raw, strip_html=cfg.strip_html)
@@ -152,6 +153,10 @@ def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
     # Les chemins connus servent ensuite à repérer les orphelins sur le disque
     for af in meta.audio_files:
         known_paths.add(os.path.normpath(cfg.map_path(af["path"])))
+
+    # Enregistré avant tout retour anticipé : un doublon doit rester visible
+    # même quand le cache d'état fait sauter les deux copies.
+    dupmod.register(dup_store, cfg, meta)
 
     # --- livre non identifié ? -------------------------------------------
     gaps = triage.missing_fields(meta, raw, cfg.incomplete_checks)
@@ -287,6 +292,8 @@ def handle_orphans(cfg: Config, known_paths: set, report: list) -> int:
         return 0
 
     excludes = [cfg.unmatched_dir]
+    if cfg.duplicate_dir:
+        excludes.append(cfg.duplicate_dir)
     if cfg.export_action != "none":
         excludes.append(cfg.export_dir)
     orphans = triage.find_orphans(roots, known_paths, excludes,
@@ -339,7 +346,7 @@ def run_once(cfg: Config) -> int:
     client = AbsClient(cfg.abs_url, cfg.abs_token, cfg.verify_ssl, cfg.timeout)
     state = load_state(cfg.state_file)
     stats = {"ok": 0, "skip": 0, "incomplete": 0, "error": 0, "missing": 0}
-    known_paths, report = set(), []
+    known_paths, report, dup_store = set(), [], {}
     started = time.time()
     full_scan = not cfg.only_items
 
@@ -358,7 +365,8 @@ def run_once(cfg: Config) -> int:
             full_scan = False
             break
         try:
-            result = process_item(client, cfg, item_id, state, known_paths, report)
+            result = process_item(client, cfg, item_id, state, known_paths,
+                                  report, dup_store)
         except AbsError as e:
             log.error("  %s : %s", item_id, e)
             result = "error"
@@ -371,6 +379,10 @@ def run_once(cfg: Config) -> int:
 
     save_state(cfg.state_file, state)
 
+    duplicates_found = 0
+    if full_scan:
+        duplicates_found = dupmod.handle_duplicates(cfg, dup_store, report)
+
     orphans = 0
     if full_scan and not cfg.libraries:
         orphans = handle_orphans(cfg, known_paths, report)
@@ -381,9 +393,9 @@ def run_once(cfg: Config) -> int:
 
     log.info(
         "Terminé en %.1fs — %d taggé(s), %d inchangé(s), %d non identifié(s), "
-        "%d orphelin(s), %d fichier(s) manquant(s), %d erreur(s)%s",
+        "%d doublon(s), %d orphelin(s), %d fichier(s) manquant(s), %d erreur(s)%s",
         time.time() - started, stats["ok"], stats["skip"], stats["incomplete"],
-        orphans, stats["missing"], stats["error"],
+        duplicates_found, orphans, stats["missing"], stats["error"],
         "  [DRY-RUN, rien écrit]" if cfg.dry_run else "")
     return 1 if stats["error"] or stats["missing"] else 0
 
@@ -397,6 +409,8 @@ def main() -> int:
     parser.add_argument("--library", action="append", default=[], help="nom ou id de bibliothèque")
     parser.add_argument("--no-triage", action="store_true",
                         help="désactive le tag/déplacement des non identifiés et orphelins")
+    parser.add_argument("--duplicates-only", action="store_true",
+                        help="ne fait que détecter les doublons (aucune écriture de tags)")
     args = parser.parse_args()
 
     cfg = Config.from_env()
@@ -413,7 +427,17 @@ def main() -> int:
     if args.no_triage:
         cfg.on_incomplete = "none"
         cfg.orphan_action = "none"
+        cfg.duplicate_action = "none"
         cfg.tag_incomplete_files = True
+    if args.duplicates_only:
+        cfg.dry_run = True
+        cfg.force = True
+        cfg.on_incomplete = "none"
+        cfg.orphan_action = "none"
+        cfg.export_action = "none"
+        cfg.interval = 0
+        if cfg.duplicate_action == "none":
+            cfg.duplicate_action = "report"
 
     logging.basicConfig(
         level=getattr(logging, cfg.log_level, logging.INFO),
@@ -450,6 +474,14 @@ def main() -> int:
     if cfg.orphan_action != "none":
         log.info("Orphelins disque : action=%s, dossier de tri=%s",
                  cfg.orphan_action, cfg.unmatched_dir)
+    if cfg.duplicate_action != "none":
+        log.info("Doublons : action=%s, clés=%s%s", cfg.duplicate_action,
+                 ",".join(cfg.duplicate_keys),
+                 f", dossier={cfg.duplicate_dir}" if cfg.duplicate_action == "move" else "")
+        if cfg.duplicate_action == "move" and cfg.export_action != "none":
+            log.warning("DUPLICATE_ACTION=move avec l'export actif : les doublons sont "
+                        "déplacés APRÈS avoir été exportés. Fais une passe "
+                        "EXPORT_ACTION=none d'abord.")
     if cfg.export_action != "none":
         log.info("Export (%s) vers %s", cfg.export_action, cfg.export_dir)
         if cfg.export_action == "hardlink":
