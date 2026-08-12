@@ -64,6 +64,12 @@ services:
       ORPHAN_MIN_AGE_MIN: "${ORPHAN_MIN_AGE_MIN:-30}"
       UNMATCHED_DIR: "${UNMATCHED_DIR:-/media/a-trier}"
 
+      # ---------------- Doublons (plusieurs items ABS pour un même livre) ----------------
+      # report : signale seulement — move : isole TOUTES les copies pour comparaison.
+      DUPLICATE_ACTION: "${DUPLICATE_ACTION:-report}"   # report | move | none
+      DUPLICATE_KEYS: "${DUPLICATE_KEYS:-asin}"         # asin,isbn,titre
+      DUPLICATE_DIR: "${DUPLICATE_DIR:-/media/a-trier/doublons}"
+
       # ---------------- Export des livres validés ----------------
       # Seuls les livres complets (non signalés par le triage) sont exportés.
       EXPORT_ACTION: "${EXPORT_ACTION:-hardlink}"          # none | copy | move | hardlink | symlink
