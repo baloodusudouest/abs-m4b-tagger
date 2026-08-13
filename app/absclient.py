@@ -1,9 +1,69 @@
 """Client minimal de l'API Audiobookshelf."""
 
+import html as _html
 import logging
+import os
+import re
+
 import requests
 
 log = logging.getLogger("abs")
+
+
+# --------------------------------------------------------------------- entités
+# Audiobookshelf renvoie parfois des entités HTML non décodées dans les champs
+# texte (« Jusqu&rsquo;à la fin du monde », « Les Sept S&oelig;urs »). Elles se
+# retrouvent telles quelles dans les tags des fichiers et dans les noms de
+# dossiers exportés. On les décode dès la sortie de l'API.
+#
+# Mettre DECODE_HTML_ENTITIES=false pour retrouver l'ancien comportement.
+DECODE_HTML_ENTITIES = os.getenv("DECODE_HTML_ENTITIES", "true").strip().lower() not in (
+    "false", "0", "no", "off",
+)
+
+# Volontairement STRICT : html.unescape() décode aussi les entités sans
+# point-virgule final, ce qui transformerait « Fish&notchips » en « Fish¬chips »
+# ou « R&Bient » en « R®ient ». On n'accepte que les formes bien fermées.
+_ENTITY_RE = re.compile(
+    r"&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});"
+)
+
+# Champs contenant du HTML légitime : y décoder &lt; et &gt; fabriquerait de
+# vraies balises, que STRIP_HTML supprimerait ensuite avec le texte autour.
+_MARKUP_KEYS = {"description", "descriptionPlain", "descriptionHtml", "html"}
+_MARKUP_ENTITIES = {"lt", "gt", "amp", "#60", "#62", "#38", "#x3c", "#x3e", "#x26"}
+
+# Certaines valeurs arrivent doublement encodées (« &amp;rsquo; »).
+_MAX_PASSES = 3
+
+
+def _sub_entity(m, keep_markup):
+    if keep_markup and m.group(1).lower() in _MARKUP_ENTITIES:
+        return m.group(0)
+    return _html.unescape(m.group(0))
+
+
+def decode_entities(text, keep_markup=False):
+    """Décode les entités HTML bien formées d'une chaîne."""
+    if not isinstance(text, str) or "&" not in text:
+        return text
+    for _ in range(_MAX_PASSES):
+        new = _ENTITY_RE.sub(lambda m: _sub_entity(m, keep_markup), text)
+        if new == text:
+            break
+        text = new
+    return text
+
+
+def deep_decode(obj, _key=None):
+    """Applique decode_entities() à toutes les chaînes d'une structure JSON."""
+    if isinstance(obj, str):
+        return decode_entities(obj, keep_markup=(_key in _MARKUP_KEYS))
+    if isinstance(obj, dict):
+        return {k: deep_decode(v, k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [deep_decode(v, _key) for v in obj]
+    return obj
 
 
 class AbsError(Exception):
@@ -33,25 +93,36 @@ class AbsClient:
         r.raise_for_status()
         return r
 
+    def _json(self, path: str, decode: bool = True, **params):
+        """GET + parsing JSON, entités HTML décodées au passage.
+
+        decode=False sur les endpoints dont on n'exploite que les identifiants :
+        inutile de parcourir toute la structure.
+        """
+        data = self._get(path, **params).json()
+        if decode and DECODE_HTML_ENTITIES:
+            return deep_decode(data)
+        return data
+
     def ping(self) -> str:
         r = self._get("/ping")
         try:
-            data = self._get("/api/me").json()
+            data = self._json("/api/me")
             return data.get("username", "?")
         except Exception:
             return "?" if r.ok else "?"
 
     # -------------------------------------------------------------- endpoints
     def libraries(self) -> list:
-        data = self._get("/api/libraries").json()
+        data = self._json("/api/libraries")
         return data.get("libraries", data if isinstance(data, list) else [])
 
     def library_item_ids(self, library_id: str) -> list:
         """Récupère tous les ids d'items d'une bibliothèque (pagination incluse)."""
         ids, page, limit = [], 0, 500
         while True:
-            data = self._get(f"/api/libraries/{library_id}/items",
-                             limit=limit, page=page, minified=1).json()
+            data = self._json(f"/api/libraries/{library_id}/items",
+                              decode=False, limit=limit, page=page, minified=1)
             results = data.get("results", [])
             for it in results:
                 if it.get("mediaType", "book") == "book":
@@ -63,7 +134,7 @@ class AbsClient:
         return ids
 
     def item(self, item_id: str) -> dict:
-        return self._get(f"/api/items/{item_id}", expanded=1).json()
+        return self._json(f"/api/items/{item_id}", expanded=1)
 
     def set_tags(self, item_id: str, tags: list) -> bool:
         """Remplace la liste de tags d'un item (PATCH, avec repli sur batch/update)."""
