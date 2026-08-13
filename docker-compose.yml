@@ -12,10 +12,11 @@
 
 services:
   abs-m4b-tagger:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     image: abs-m4b-tagger:local
+    pull_policy: build
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
     container_name: abs-m4b-tagger
     restart: unless-stopped
 
