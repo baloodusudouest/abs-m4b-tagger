@@ -33,6 +33,16 @@ _ENTITY_RE = re.compile(
 _MARKUP_KEYS = {"description", "descriptionPlain", "descriptionHtml", "html"}
 _MARKUP_ENTITIES = {"lt", "gt", "amp", "#60", "#62", "#38", "#x3c", "#x3e", "#x26"}
 
+# CHAMPS À NE JAMAIS TOUCHER.
+# Un chemin n'est pas du texte affichable : c'est un identifiant qui doit
+# rester exact à l'octet près. Certains fichiers de la bibliothèque portent
+# réellement l'entité dans leur nom (« Trois ma&icirc;tres (2021).m4b ») ;
+# les décoder ferait chercher un fichier qui n'existe pas sur le disque.
+_RAW_KEYS = {
+    "path", "relPath", "folderPath", "metadataPath", "fullPath", "coverPath",
+    "filename", "ext", "libraryFolderId", "ino", "id",
+}
+
 # Certaines valeurs arrivent doublement encodées (« &amp;rsquo; »).
 _MAX_PASSES = 3
 
@@ -56,8 +66,13 @@ def decode_entities(text, keep_markup=False):
 
 
 def deep_decode(obj, _key=None):
-    """Applique decode_entities() à toutes les chaînes d'une structure JSON."""
+    """Applique decode_entities() aux chaînes d'une structure JSON.
+
+    Les champs de chemin (_RAW_KEYS) sont laissés strictement intacts.
+    """
     if isinstance(obj, str):
+        if _key in _RAW_KEYS:
+            return obj
         return decode_entities(obj, keep_markup=(_key in _MARKUP_KEYS))
     if isinstance(obj, dict):
         return {k: deep_decode(v, k) for k, v in obj.items()}
