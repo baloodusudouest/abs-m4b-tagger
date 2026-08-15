@@ -353,6 +353,27 @@ Chaque livre représente une requête vers le fournisseur : sur 6 000 titres, co
 une heure avec le délai par défaut. `VERIFY_MAX_PER_PASS` permet d'étaler ce premier
 contrôle sur plusieurs passes plutôt que de tout faire d'un coup.
 
+#### N'exporter que les livres vérifiés
+
+`EXPORT_ONLY_VERIFIED=true` restreint l'export aux livres dont la durée correspond à la fiche
+(`conforme`) ou dont l'écart a été validé à la main (`écart validé manuellement`). Tout le
+reste — écart non validé, absent du fournisseur, sans ASIN, pas encore mesuré — attend.
+
+Les mesures sont chargées depuis le cache **au démarrage de la passe**, car l'export a lieu
+pendant la boucle sur les items alors que la vérification s'exécute après. Conséquence : un
+livre jamais mesuré n'est pas exportable à la passe où il est découvert ; il le devient à la
+suivante. Un livre corrigé dans l'interface le devient aussi dès la passe d'après.
+
+Le démarrage annonce le volume concerné, et la fin de passe détaille ce qui a été écarté :
+
+```
+Export limité aux durées conformes : 6140 livre(s) éligible(s) sur 6393 mesuré(s)
+Export différé pour 253 livre(s) : 152 durée incohérente, 101 absent du fournisseur
+```
+
+Cette option exige `VERIFY_ACTION=report` : sans mesure, aucun livre ne serait exporté, et
+le démarrage refuse la combinaison.
+
 #### Effet sur les doublons
 
 Le contrôle des durées alimente directement le classement des groupes de doublons :
@@ -695,6 +716,7 @@ de la langue du livre : français → `fr`, anglais → `us`, allemand → `de`,
 
 | Variable | Défaut | Rôle |
 |---|---|---|
+| `EXPORT_ONLY_VERIFIED` | `false` | N'exporter que les durées conformes ou validées |
 | `EXPORT_ACTION` | `hardlink` | `none`, `copy`, `move`, `hardlink` ou `symlink` |
 | `MOVE_CLEANUP_SOURCE` | `true` | Supprimer le dossier source vidé (résidus connus uniquement) |
 | `AFTER_MOVE` | `keep` | `keep` (item ABS conservé, marqué manquant) ou `remove` (retiré de la base) |

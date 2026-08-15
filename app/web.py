@@ -357,6 +357,7 @@ def creer_app(cfg) -> Flask:
                                     (copie.get("id") or "x")[:8])
                 res = triage.move_aside(chemin, cfg.library_roots, dest, cfg.dry_run)
                 if res:
+                    runstate.note_deplacement(chemin)
                     deplaces.append(res)
                 else:
                     erreurs.append(f"déplacement refusé : {chemin}")
@@ -374,6 +375,8 @@ def creer_app(cfg) -> Flask:
         with runstate.VERROU:
             dest = triage.move_aside(chemin, cfg.library_roots,
                                      cfg.unmatched_dir, cfg.dry_run)
+            if dest:
+                runstate.note_deplacement(chemin)
         if not dest:
             return jsonify({"erreur": "déplacement refusé"}), 500
         return jsonify({"ok": True, "destination": dest, "dry_run": cfg.dry_run})
@@ -457,8 +460,13 @@ border:1px solid var(--acc);padding:11px 20px;border-radius:8px;display:none;z-i
 .grp{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:14px;margin-bottom:10px}
 .cop{border:1px solid var(--line);border-radius:7px;padding:10px;margin-top:8px}
 .cop.sel{border-color:var(--ok);background:#12261a55}
+.banniere{display:none;margin:0 20px 10px;padding:10px 14px;border-radius:8px;
+background:#332800;color:var(--warn);border:1px solid var(--warn);font-size:14px}
 </style></head><body>
 <header><h1>Revue de bibliothèque</h1><span id="etat">…</span></header>
+<div id="banniere" class="banniere">Une passe est en cours. Les livres que tu mets de
+côté maintenant seront ignorés par la passe, mais son rapport ne sera à jour qu'à la
+prochaine exécution.</div>
 <nav>
   <button data-v="ecarts" class="on">Écarts de durée <span id="n-ecarts"></span></button>
   <button data-v="doublons">Doublons <span id="n-doublons"></span></button>
@@ -482,9 +490,11 @@ function toast(t,ok=true){const m=$('#msg');m.textContent=t;
 async function api(u,opt){const r=await fetch(u,opt);const j=await r.json().catch(()=>({}));
  if(!r.ok) throw new Error(j.erreur||('HTTP '+r.status));return j;}
 
-async function etat(){const e=await api('/api/etat');
+let passeEnCours=false;
+async function etat(){const e=await api('/api/etat');passeEnCours=e.passe_en_cours;
  $('#etat').textContent=(e.passe_en_cours?`passe en cours — ${e.phase} ${e.traites}/${e.total}`:
-  'au repos')+(e.dry_run?' · DRY-RUN':'')+` · tolérance ${e.tolerance_pct}% / ${e.plancher_min} min`;}
+  'au repos')+(e.dry_run?' · DRY-RUN':'')+` · tolérance ${e.tolerance_pct}% / ${e.plancher_min} min`;
+ $('#banniere').style.display=e.passe_en_cours?'block':'none';}
 
 async function charger(v){courant=v;vue.innerHTML='<div class="vide">Chargement…</div>';
  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
@@ -527,7 +537,8 @@ function choisir(gi,ci){choix[gi]=ci;const g=donnees.doublons[gi];
 
 async function resoudre(gi){const g=donnees.doublons[gi],ci=choix[gi];
  if(ci===undefined)return;
- if(!confirm('Les autres copies seront déplacées hors de la bibliothèque. Continuer ?'))return;
+ if(!confirm('Les autres copies seront déplacées hors de la bibliothèque. Continuer ?'
+  +(passeEnCours?'\n\nUne passe est en cours : son rapport restera figé jusqu\u2019à la suivante.':'')))return;
  try{const r=await api('/api/doublon/resoudre',{method:'POST',
   headers:{'Content-Type':'application/json'},
   body:JSON.stringify({garder:g.copies[ci].id,copies:g.copies,
