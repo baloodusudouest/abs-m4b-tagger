@@ -307,12 +307,41 @@ C'est ABS qui relaie la requête : aucune clé Audible à fournir, le token ABS 
 |---|---|---|
 | `VERIFY_ACTION` | `report` | `report` ou `none` |
 | `VERIFY_PROVIDER` | `audible.fr` | Fournisseur interrogé |
-| `VERIFY_TOLERANCE_PCT` | `2` | Écart toléré avant de signaler |
+| `VERIFY_TOLERANCE_PCT` | `10` | Écart relatif toléré, en pourcent |
+| `VERIFY_MIN_ECART_MIN` | `5` | Plancher absolu, en minutes |
 | `VERIFY_DELAY_MS` | `400` | Pause entre deux requêtes sortantes |
 | `VERIFY_MAX_PER_PASS` | `0` | Plafond par passe (0 = sans limite) |
 | `VERIFY_RETRY_DAYS` | `30` | Délai avant de réessayer un « introuvable » |
+| `VERIFY_ACCEPT_TAG` | `duree-ok` | Tag ABS validant un écart connu (vide = désactivé) |
 
-Quatre verdicts : `conforme`, `durée incohérente`, `absent du fournisseur`, `sans ASIN`.
+Cinq verdicts : `conforme`, `durée incohérente`, `écart validé manuellement`,
+`absent du fournisseur`, `sans ASIN`.
+
+#### Valider un écart normal
+
+Un écart n'est pas toujours une erreur : silences resserrés, jingle d'éditeur absent, version
+remasterisée. Après avoir contrôlé le livre, pose le tag **`duree-ok`** sur l'item dans
+Audiobookshelf (`Éditer → Tags`). Il passe en `écart validé manuellement` et cesse d'être
+signalé, sans que la tolérance générale ait à être relâchée pour toute la bibliothèque.
+
+La validation est enregistrée dans `/config/validations.json` avec l'ASIN et la durée du
+fichier **au moment où tu l'as posée**. Elle est automatiquement annulée si l'un des deux
+change — item réidentifié sur une autre fiche, fichier remplacé — car ce n'est plus le même
+objet que celui que tu as contrôlé. Le log te le dit alors explicitement, et la validation
+n'est PAS renouvelée toute seule : il faut retirer puis reposer le tag. Retirer le tag suffit
+par ailleurs à révoquer la validation.
+
+Ce tag doit être différent de `INCOMPLETE_TAG`, qui est posé et retiré automatiquement.
+
+**Les deux seuils doivent être dépassés** pour qu'un écart soit signalé. Un pourcentage seul
+est structurellement injuste envers les livres courts : deux minutes de jingle d'éditeur
+pèsent 4 % sur un livre d'une heure, mais 0,2 % sur vingt heures. Le plancher
+`VERIFY_MIN_ECART_MIN` neutralise ce bruit.
+
+**Le cache ne contient que des mesures, jamais des verdicts.** Le classement est recalculé à
+chaque passe à partir des durées stockées : ajuster `VERIFY_TOLERANCE_PCT` reclasse toute la
+bibliothèque instantanément, sans une seule requête sortante. Un écart détecté il y a
+plusieurs passes reste par ailleurs signalé tant qu'il n'est pas corrigé.
 
 **Le résultat est mis en cache** dans `/config/verifications.json`. La première passe
 contrôle toute la bibliothèque ; les suivantes ne reprennent un livre que si son ASIN a
@@ -339,6 +368,39 @@ doublon, c'est une erreur d'identification. Déplacer un tel groupe sortirait de
 bibliothèque deux livres légitimes. Seuls les groupes confirmés sont donc isolés par
 `DUPLICATE_ACTION=move` ; les autres sont signalés pour correction dans ABS.
 `DUPLICATE_MOVE_UNVERIFIED=true` autorise en plus les groupes indéterminés.
+
+## Interface web de revue
+
+Les passes produisent des constats ; l'interface sert à les traiter. Elle tourne dans le même
+conteneur, sur un thread séparé, et s'ouvre sur `http://<ip-du-nas>:8681`.
+
+Quatre files de travail, alimentées par `/config` et par l'API ABS en direct :
+
+| File | Actions disponibles |
+|---|---|
+| **Écarts de durée** | Valider l'écart (pose le tag `duree-ok` dans ABS), ou réidentifier le livre |
+| **Doublons** | Choisir la copie à garder, isoler les autres dans `DUPLICATE_DIR` |
+| **Non identifiés** | Chercher une fiche chez le fournisseur et l'appliquer |
+| **Orphelins** | Mettre le fichier de côté dans `UNMATCHED_DIR` |
+
+La réidentification affiche les résultats du fournisseur avec **leur durée**, ce qui permet de
+choisir la bonne fiche du premier coup. Appliquer une fiche écrit les métadonnées et la
+pochette dans ABS, puis **purge la mesure et la validation** de ce livre : la passe suivante
+le recontrôlera sur sa nouvelle identité.
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `WEB_ENABLE` | `true` | Démarre l'interface |
+| `WEB_PORT` | `8681` | Port d'écoute (à publier dans le compose) |
+| `WEB_HOST` | `0.0.0.0` | Interface d'écoute |
+
+**L'interface n'a aucune authentification.** Elle peut modifier la base Audiobookshelf et
+déplacer des fichiers : réserve-la au réseau local ou à Tailscale, et ne la publie pas sur
+Internet sans placer une authentification devant.
+
+Les écritures de l'interface et celles de la passe de fond partagent un verrou : elles ne
+peuvent pas agir en même temps sur le disque. Quand `DRY_RUN=true`, les déplacements demandés
+depuis l'interface sont simulés, comme pour la passe.
 
 ### Rapport
 
@@ -622,10 +684,12 @@ de la langue du livre : français → `fr`, anglais → `us`, allemand → `de`,
 | `DUPLICATE_MOVE_UNVERIFIED` | `false` | Déplacer aussi les groupes non vérifiés |
 | `VERIFY_ACTION` | `report` | `report` ou `none` |
 | `VERIFY_PROVIDER` | `audible.fr` | Fournisseur interrogé via ABS |
-| `VERIFY_TOLERANCE_PCT` | `2` | Écart de durée toléré, en pourcent |
+| `VERIFY_TOLERANCE_PCT` | `10` | Écart de durée toléré, en pourcent |
+| `VERIFY_MIN_ECART_MIN` | `5` | Plancher absolu sous lequel rien n'est signalé |
 | `VERIFY_DELAY_MS` | `400` | Pause entre deux requêtes sortantes |
 | `VERIFY_MAX_PER_PASS` | `0` | Plafond de vérifications par passe |
 | `VERIFY_RETRY_DAYS` | `30` | Délai avant de réessayer un « introuvable » |
+| `VERIFY_ACCEPT_TAG` | `duree-ok` | Tag ABS validant un écart connu (vide = désactivé) |
 
 ### Export des livres validés
 

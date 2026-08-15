@@ -54,6 +54,35 @@ services:
       ORPHAN_MIN_AGE_MIN: "${ORPHAN_MIN_AGE_MIN:-30}"
       UNMATCHED_DIR: "${UNMATCHED_DIR:-/media/a-trier}"
 
+      # ---------------- Doublons (plusieurs items ABS pour un même livre) ----------------
+      # report : signale seulement — move : isole TOUTES les copies pour comparaison.
+      DUPLICATE_ACTION: "${DUPLICATE_ACTION:-report}"   # report | move | none
+      DUPLICATE_KEYS: "${DUPLICATE_KEYS:-asin}"         # asin,isbn,titre
+      DUPLICATE_DIR: "${DUPLICATE_DIR:-/media/a-trier/doublons}"
+      DUPLICATE_MOVE_UNVERIFIED: "${DUPLICATE_MOVE_UNVERIFIED:-false}"
+
+      # ---------------- Contrôle des durées auprès du fournisseur ----------------
+      # Compare la durée réelle du fichier à celle annoncée par Audible pour
+      # l'ASIN de l'item, via l'API d'ABS. Résultat mis en cache : seuls les
+      # livres nouveaux ou modifiés sont recontrôlés aux passes suivantes.
+      VERIFY_ACTION: "${VERIFY_ACTION:-report}"          # report | none
+      VERIFY_PROVIDER: "${VERIFY_PROVIDER:-audible.fr}"
+      # Signale un écart seulement si les DEUX seuils sont dépassés : sans le
+      # plancher, 2 min de jingle = 4% sur 1h mais 0,2% sur 20h.
+      VERIFY_TOLERANCE_PCT: "${VERIFY_TOLERANCE_PCT:-10}"
+      VERIFY_MIN_ECART_MIN: "${VERIFY_MIN_ECART_MIN:-5}"
+      VERIFY_DELAY_MS: "${VERIFY_DELAY_MS:-400}"         # pause entre 2 requêtes
+      VERIFY_MAX_PER_PASS: "${VERIFY_MAX_PER_PASS:-0}"   # 0 = pas de plafond
+      VERIFY_RETRY_DAYS: "${VERIFY_RETRY_DAYS:-30}"
+      # Tag à poser dans ABS pour valider un écart normal (silences resserrés,
+      # édition différente). Vide = fonction désactivée.
+      VERIFY_ACCEPT_TAG: "${VERIFY_ACCEPT_TAG:-duree-ok}"
+
+      # ---------------- Interface web de revue ----------------
+      # AUCUNE authentification : réseau local uniquement.
+      WEB_ENABLE: "${WEB_ENABLE:-true}"
+      WEB_PORT: "${WEB_PORT:-8681}"
+
       # ---------------- Export des livres validés ----------------
       # Seuls les livres complets (non signalés par le triage) sont exportés.
       EXPORT_ACTION: "${EXPORT_ACTION:-hardlink}"          # none | copy | move | hardlink | symlink
@@ -78,6 +107,9 @@ services:
       AUTHOR_DROP_NARRATORS: "${AUTHOR_DROP_NARRATORS:-true}"
       AUTHOR_SORT: "${AUTHOR_SORT:-true}"
       TRUST_UPDATED_AT: "${TRUST_UPDATED_AT:-true}"
+
+    ports:
+      - "${WEB_PORT:-8681}:${WEB_PORT:-8681}"
 
     volumes:
       - "${CONFIG_DIR:-/volume1/docker/abs-tagger/config}:/config"

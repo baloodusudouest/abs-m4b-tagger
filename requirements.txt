@@ -1,3 +1,4 @@
 requests==2.32.3
 mutagen==1.47.0
 Pillow==11.0.0
+flask==3.1.0
