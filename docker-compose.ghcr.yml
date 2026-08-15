@@ -85,6 +85,9 @@ services:
 
       # ---------------- Export des livres validés ----------------
       # Seuls les livres complets (non signalés par le triage) sont exportés.
+      # true : n'exporte QUE les livres dont la durée colle à la fiche du
+      # fournisseur. Les autres attendent d'être corrigés dans l'interface.
+      EXPORT_ONLY_VERIFIED: "${EXPORT_ONLY_VERIFIED:-false}"
       EXPORT_ACTION: "${EXPORT_ACTION:-hardlink}"          # none | copy | move | hardlink | symlink
       MOVE_CLEANUP_SOURCE: "${MOVE_CLEANUP_SOURCE:-true}"   # supprimer le dossier source vidé
       AFTER_MOVE: "${AFTER_MOVE:-keep}"               # keep | remove (retire l'item de la base ABS)

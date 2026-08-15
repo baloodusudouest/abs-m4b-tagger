@@ -235,6 +235,29 @@ def _normalise(cached: dict) -> dict:
     return out
 
 
+def verdicts_en_cache(cfg) -> dict:
+    """Verdicts connus AVANT la passe, à partir des seules mesures en cache.
+
+    La vérification s'exécute après la boucle sur les items, alors que l'export
+    a lieu pendant. Sans ce pré-chargement, aucun filtre sur la durée ne serait
+    applicable à l'export. Un livre jamais mesuré n'apparaît pas ici : il sera
+    mesuré en fin de passe et exportable à la suivante.
+    """
+    if cfg.verify_action == "none":
+        return {}
+    validations = load_validations(cfg)
+    out = {}
+    for item_id, brut in load_cache(cfg).items():
+        mesure = _normalise(brut)
+        v = verdict(mesure, cfg)
+        if v["statut"] == ECART:
+            enreg = validations.get(item_id) or {}
+            if enreg and not enreg.get("revoquee"):
+                v["statut"] = ACCEPTE
+        out[item_id] = v["statut"]
+    return out
+
+
 # ------------------------------------------------------------------ passe
 def run(cfg, client, store: dict, report: list) -> dict:
     """Mesure ce qui manque, puis reclasse TOUT avec les seuils courants."""

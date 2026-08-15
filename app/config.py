@@ -114,6 +114,7 @@ class Config:
     verify_max_per_pass: int = 0          # 0 = pas de plafond
     verify_retry_days: int = 30           # réessai des « introuvable »
     verify_accept_tag: str = "duree-ok"   # tag ABS validant un écart connu
+    export_only_verified: bool = False    # n'exporter que les durées conformes
 
     # --- Interface web ---
     web_enable: bool = True
@@ -193,6 +194,7 @@ class Config:
             verify_max_per_pass=_int("VERIFY_MAX_PER_PASS", 0),
             verify_retry_days=_int("VERIFY_RETRY_DAYS", 30),
             verify_accept_tag=os.environ.get("VERIFY_ACCEPT_TAG", "duree-ok").strip(),
+            export_only_verified=_bool("EXPORT_ONLY_VERIFIED", False),
             web_enable=_bool("WEB_ENABLE", True),
             web_host=os.environ.get("WEB_HOST", "0.0.0.0").strip(),
             web_port=_int("WEB_PORT", 8681),
@@ -289,6 +291,9 @@ class Config:
                     and self.verify_accept_tag == self.incomplete_tag):
                 errors.append("VERIFY_ACCEPT_TAG et INCOMPLETE_TAG doivent différer : "
                               "le second est posé et retiré automatiquement")
+        if self.export_only_verified and self.verify_action == "none":
+            errors.append("EXPORT_ONLY_VERIFIED exige VERIFY_ACTION=report : "
+                          "sans mesure de durée, aucun livre ne serait exporté")
         if self.orphan_action != "none" and not self.library_roots:
             errors.append("ORPHAN_SCAN_DIRS (ou PATH_MAP) est requis pour la détection des orphelins")
         if self.export_action not in ("none", "copy", "move", "hardlink", "symlink"):

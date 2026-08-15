@@ -133,9 +133,12 @@ def handle_incomplete(client, cfg, meta, item, gaps, report) -> None:
             log.warning("      dossier introuvable pour déplacement : %s", local)
 
 
+_NON_EXPORTES = {}
+
+
 def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
                  known_paths: set, report: list, dup_store: dict,
-                 verify_store: dict) -> str:
+                 verify_store: dict, verdicts_connus: dict = None) -> str:
     """Retourne 'ok', 'skip', 'incomplete', 'error' ou 'missing'."""
     raw = client.item(item_id)
     meta = BookMeta(raw, strip_html=cfg.strip_html)
@@ -225,6 +228,10 @@ def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
             if fallback and os.path.isfile(fallback):
                 log.debug("    fichier déjà déplacé, traité sur place : %s", fallback)
                 local = fallback
+            elif runstate.deplace_par_interface(local):
+                log.info("    mis de côté depuis l'interface, ignoré : %s",
+                         os.path.basename(local))
+                continue
             else:
                 log.error("    fichier introuvable : %s (source ABS : %s)", local, af["path"])
                 log.error("    -> vérifie PATH_MAP et le montage du volume")
@@ -257,7 +264,20 @@ def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
     # --- export du livre validé ------------------------------------------
     export_files = previous.get("export_files", [])
     moved = previous.get("moved", False)
-    if cfg.export_action != "none" and exported_files and not gaps:
+
+    # Filtre optionnel : n'exporter que ce dont la durée colle à la fiche.
+    # Un livre non encore mesuré est écarté, pas exporté « par défaut ».
+    exportable = True
+    if cfg.export_only_verified and cfg.export_action != "none":
+        statut = (verdicts_connus or {}).get(item_id)
+        exportable = statut in (verifymod.OK, verifymod.ACCEPTE)
+        if not exportable:
+            log.info("      export différé (durée : %s)",
+                     verifymod.LIBELLES.get(statut, "pas encore mesurée"))
+            _NON_EXPORTES[statut or "non mesuré"] = \
+                _NON_EXPORTES.get(statut or "non mesuré", 0) + 1
+
+    if cfg.export_action != "none" and exported_files and not gaps and exportable:
         try:
             res = exportmod.export_item(cfg, meta, exported_files, cover_raw,
                                         cover_mime, export_rel)
@@ -352,6 +372,14 @@ def run_once(cfg: Config) -> int:
     state = load_state(cfg.state_file)
     stats = {"ok": 0, "skip": 0, "incomplete": 0, "error": 0, "missing": 0}
     known_paths, report, dup_store, verify_store = set(), [], {}, {}
+    _NON_EXPORTES.clear()
+    verdicts_connus = {}
+    if cfg.export_only_verified and cfg.export_action != "none":
+        verdicts_connus = verifymod.verdicts_en_cache(cfg)
+        pretes = sum(1 for s in verdicts_connus.values()
+                     if s in (verifymod.OK, verifymod.ACCEPTE))
+        log.info("Export limité aux durées conformes : %d livre(s) éligible(s) "
+                 "sur %d mesuré(s)", pretes, len(verdicts_connus))
     started = time.time()
     full_scan = not cfg.only_items
 
@@ -375,7 +403,8 @@ def run_once(cfg: Config) -> int:
         try:
             with runstate.VERROU:
                 result = process_item(client, cfg, item_id, state, known_paths,
-                                      report, dup_store, verify_store)
+                                      report, dup_store, verify_store,
+                                      verdicts_connus)
         except AbsError as e:
             log.error("  %s : %s", item_id, e)
             result = "error"
