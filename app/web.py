@@ -27,7 +27,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, request, Response
 
-import duplicates as dupmod
 import runstate
 import triage
 import verify as verifymod
@@ -495,7 +494,7 @@ async function charger(v){courant=v;vue.innerHTML='<div class="vide">Chargement�
 
 function rEcarts(){const d=donnees.ecarts;
  if(!d.length){vue.innerHTML='<div class="vide">Aucun écart. Bibliothèque cohérente.</div>';return;}
- vue.innerHTML=d.map(x=>`<div class="item"><img src="/api/cover/${x.id}" onerror="this.style.visibility='hidden'">
+ vue.innerHTML=d.map((x,i)=>`<div class="item"><img src="/api/cover/${x.id}" onerror="this.style.visibility='hidden'">
  <div class="corps"><div class="titre">${esc(x.titre)}
  <span class="badge ${x.valide?'b-ok':'b-bad'}">${x.valide?'validé':x.ecart_pct+'%'}</span></div>
  <div class="meta">fichier ${x.duree_fichier} · fiche ${x.duree_fiche} · écart ${x.ecart} · ASIN ${x.asin}</div>
@@ -503,8 +502,8 @@ function rEcarts(){const d=donnees.ecarts;
  <div class="meta">${esc(x.chemin)}</div>
  <div class="actions">
  <button class="act ${x.valide?'':'primaire'}" onclick="valider('${x.id}',${!x.valide})">
- ${x.valide?'Retirer la validation':'C\\'est le bon livre'}</button>
- <button class="act" onclick="ouvrirRecherche('${x.id}','${esc(x.titre)}')">Réidentifier…</button>
+ ${x.valide?'Retirer la validation':"C'est le bon livre"}</button>
+ <button class="act" onclick="ouvrirRecherche('ecarts',${i})">Réidentifier…</button>
  </div></div></div>`).join('');}
 
 function rDoublons(){const d=donnees.doublons;
@@ -539,22 +538,22 @@ async function resoudre(gi){const g=donnees.doublons[gi],ci=choix[gi];
 
 function rNonId(){const d=donnees['non-identifies'];
  if(!d.length){vue.innerHTML='<div class="vide">Tous les livres sont identifiés.</div>';return;}
- vue.innerHTML=d.map(x=>`<div class="item"><div class="corps">
+ vue.innerHTML=d.map((x,i)=>`<div class="item"><div class="corps">
  <div class="titre">${esc(x.titre||x.id)}<span class="badge b-warn">${(x.manque||[]).join(', ')}</span></div>
  <div class="meta">${esc(x.chemin||'')}</div>
  <div class="actions"><button class="act primaire"
- onclick="ouvrirRecherche('${x.id}','${esc(x.titre||'')}')">Chercher une fiche…</button></div>
+ onclick="ouvrirRecherche('non-identifies',${i})">Chercher une fiche…</button></div>
  </div></div>`).join('');}
 
 function rOrph(){const d=donnees.orphelins;
  if(!d.length){vue.innerHTML='<div class="vide">Aucun orphelin.</div>';return;}
- vue.innerHTML=d.map(p=>`<div class="item"><div class="corps">
+ vue.innerHTML=d.map((p,i)=>`<div class="item"><div class="corps">
  <div class="meta">${esc(p)}</div><div class="actions">
- <button class="act" onclick="deplacerOrphelin('${esc(p).replace(/'/g,"\\'")}')">Mettre de côté</button>
+ <button class="act" onclick="deplacerOrphelin(${i})">Mettre de côté</button>
  </div></div></div>`).join('');}
 
-async function deplacerOrphelin(p){
- if(!confirm('Déplacer hors de la bibliothèque ?'))return;
+async function deplacerOrphelin(i){const p=donnees.orphelins[i];
+ if(!confirm('Déplacer hors de la bibliothèque ?\n\n'+p))return;
  try{const r=await api('/api/orphelin',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({chemin:p,action:'move'})});
   toast(r.dry_run?'DRY-RUN : rien déplacé':'Déplacé vers '+r.destination);charger('orphelins');
@@ -566,8 +565,11 @@ async function valider(id,actif){
   toast(actif?'Écart validé':'Validation retirée');charger('ecarts');
  }catch(e){toast(e.message,false);}}
 
-function ouvrirRecherche(id,titre){cible=id;$('#q').value=titre;$('#res').innerHTML='';
- $('#dlg-t').textContent='Réidentifier : '+titre;dlg.showModal();chercher();}
+// Les titres et chemins contiennent des apostrophes : on passe des index,
+// jamais les chaînes elles-mêmes, pour ne pas casser les handlers en ligne.
+function ouvrirRecherche(vueNom,i){const x=donnees[vueNom][i];
+ cible=x.id;$('#q').value=x.titre||'';$('#res').innerHTML='';
+ $('#dlg-t').textContent='Réidentifier : '+(x.titre||x.id);dlg.showModal();chercher();}
 
 let tmr;
 $('#q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(chercher,600);});
