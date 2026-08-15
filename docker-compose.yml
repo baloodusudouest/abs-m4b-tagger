@@ -16,6 +16,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: abs-m4b-tagger:local
+    pull_policy: build
     container_name: abs-m4b-tagger
     restart: unless-stopped
 
