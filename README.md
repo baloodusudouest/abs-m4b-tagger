@@ -287,6 +287,59 @@ sudo docker exec abs-m4b-tagger python /app/main.py --duplicates-only
 
 Ce mode force `DRY_RUN`, ignore le cache d'état et désactive tags, export et triage.
 
+### D. Le livre n'est pas celui que dit la fiche
+
+Audiobookshelf associe parfois la mauvaise fiche Audible à un livre : deux tomes
+d'une même série, une réédition, voire deux romans sans rapport. Les tags écrits dans les
+fichiers sont alors faux, et l'export les range sous un titre qui n'est pas le leur.
+
+La durée tranche. Celle du fichier est mesurée par ABS au scan, dans le fichier lui-même —
+c'est un fait, pas une métadonnée. Elle est comparée à la durée annoncée par le fournisseur
+pour l'ASIN de l'item, via l'endpoint que l'onglet « Chercher » d'ABS utilise déjà :
+
+```
+GET /api/search/books?title=<ASIN>&provider=audible.fr   ->  "duration": 667   (minutes)
+```
+
+C'est ABS qui relaie la requête : aucune clé Audible à fournir, le token ABS suffit.
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `VERIFY_ACTION` | `report` | `report` ou `none` |
+| `VERIFY_PROVIDER` | `audible.fr` | Fournisseur interrogé |
+| `VERIFY_TOLERANCE_PCT` | `2` | Écart toléré avant de signaler |
+| `VERIFY_DELAY_MS` | `400` | Pause entre deux requêtes sortantes |
+| `VERIFY_MAX_PER_PASS` | `0` | Plafond par passe (0 = sans limite) |
+| `VERIFY_RETRY_DAYS` | `30` | Délai avant de réessayer un « introuvable » |
+
+Quatre verdicts : `conforme`, `durée incohérente`, `absent du fournisseur`, `sans ASIN`.
+
+**Le résultat est mis en cache** dans `/config/verifications.json`. La première passe
+contrôle toute la bibliothèque ; les suivantes ne reprennent un livre que si son ASIN a
+changé, si la durée du fichier a bougé, ou s'il était introuvable il y a plus de
+`VERIFY_RETRY_DAYS` jours. Sur une bibliothèque stable, les passes suivantes ne déclenchent
+aucune requête sortante.
+
+Chaque livre représente une requête vers le fournisseur : sur 6 000 titres, compter environ
+une heure avec le délai par défaut. `VERIFY_MAX_PER_PASS` permet d'étaler ce premier
+contrôle sur plusieurs passes plutôt que de tout faire d'un coup.
+
+#### Effet sur les doublons
+
+Le contrôle des durées alimente directement le classement des groupes de doublons :
+
+| Classe | Condition | Déplaçable |
+|---|---|---|
+| **doublon confirmé** | toutes les copies collent à la durée de la fiche | oui |
+| **ASIN erroné** | une seule copie colle : les autres sont mal identifiées | non |
+| **à vérifier** | aucune information exploitable | non par défaut |
+
+C'est la distinction essentielle : un même ASIN sur deux livres différents n'est pas un
+doublon, c'est une erreur d'identification. Déplacer un tel groupe sortirait de la
+bibliothèque deux livres légitimes. Seuls les groupes confirmés sont donc isolés par
+`DUPLICATE_ACTION=move` ; les autres sont signalés pour correction dans ABS.
+`DUPLICATE_MOVE_UNVERIFIED=true` autorise en plus les groupes indéterminés.
+
 ### Rapport
 
 Chaque passe écrit `/config/a-traiter.json` : livres non identifiés (avec les champs
@@ -566,6 +619,13 @@ de la langue du livre : français → `fr`, anglais → `us`, allemand → `de`,
 | `DUPLICATE_ACTION` | `report` | `report`, `move` ou `none` |
 | `DUPLICATE_KEYS` | `asin` | Clés de regroupement : `asin`, `isbn`, `titre` |
 | `DUPLICATE_DIR` | `/a-trier/doublons` | Dossier d'isolement des doublons, hors bibliothèque |
+| `DUPLICATE_MOVE_UNVERIFIED` | `false` | Déplacer aussi les groupes non vérifiés |
+| `VERIFY_ACTION` | `report` | `report` ou `none` |
+| `VERIFY_PROVIDER` | `audible.fr` | Fournisseur interrogé via ABS |
+| `VERIFY_TOLERANCE_PCT` | `2` | Écart de durée toléré, en pourcent |
+| `VERIFY_DELAY_MS` | `400` | Pause entre deux requêtes sortantes |
+| `VERIFY_MAX_PER_PASS` | `0` | Plafond de vérifications par passe |
+| `VERIFY_RETRY_DAYS` | `30` | Délai avant de réessayer un « introuvable » |
 
 ### Export des livres validés
 
