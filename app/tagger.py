@@ -57,18 +57,27 @@ class BookMeta:
         self.title_sort = clean_text(md.get("titleIgnorePrefix"), strip_html)
         self.subtitle = clean_text(md.get("subtitle"), strip_html)
 
+        # clean_text() décode les entités HTML (&oelig;, &euml;, &ocirc;) que les
+        # fiches Audible françaises contiennent souvent. Sans ce passage, un
+        # « Rapha&euml;l Personnaz » atterrit tel quel dans les tags ET dans les
+        # noms de dossiers d'export.
         authors = md.get("authors") or []
-        self.authors = [a.get("name", "") for a in authors if a.get("name")]
+        self.authors = [clean_text(a.get("name"), strip_html)
+                        for a in authors if a.get("name")]
         if not self.authors and md.get("authorName"):
-            self.authors = [x.strip() for x in str(md["authorName"]).split(",") if x.strip()]
+            self.authors = [clean_text(x, strip_html)
+                            for x in str(md["authorName"]).split(",") if x.strip()]
+        self.authors = [a for a in self.authors if a]
         self.author_lf = clean_text(md.get("authorNameLF"), strip_html)
 
         narrators = md.get("narrators") or []
         if isinstance(narrators, str):
             narrators = [narrators]
-        self.narrators = [n for n in narrators if n]
+        self.narrators = [clean_text(n, strip_html) for n in narrators if n]
         if not self.narrators and md.get("narratorName"):
-            self.narrators = [x.strip() for x in str(md["narratorName"]).split(",") if x.strip()]
+            self.narrators = [clean_text(x, strip_html)
+                              for x in str(md["narratorName"]).split(",") if x.strip()]
+        self.narrators = [n for n in self.narrators if n]
 
         series = md.get("series") or []
         if isinstance(series, dict):
@@ -84,7 +93,8 @@ class BookMeta:
             else:
                 self.series = raw.strip()
 
-        self.genres = [g for g in (md.get("genres") or []) if g]
+        self.genres = [clean_text(g, strip_html) for g in (md.get("genres") or []) if g]
+        self.genres = [g for g in self.genres if g]
         self.tags = [t for t in (media.get("tags") or item.get("tags") or []) if t]
         self.year = str(md.get("publishedYear") or "").strip()
         self.published_date = str(md.get("publishedDate") or "").strip()
