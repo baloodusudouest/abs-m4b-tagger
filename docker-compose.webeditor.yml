@@ -69,6 +69,22 @@ services:
       ORPHAN_ACTION: "report"
       ORPHAN_SCAN_DIRS: "/Media/Bibliothèque/AudioBooks"
       ORPHAN_MIN_AGE_MIN: "30"
+
+      # ---------------- Doublons ----------------
+      DUPLICATE_ACTION: "report"          # report | move | none
+      DUPLICATE_KEYS: "asin"
+      DUPLICATE_DIR: "/Media/a-trier/doublons"
+
+      # ---------------- Contrôle des durées ----------------
+      VERIFY_ACTION: "report"
+      VERIFY_PROVIDER: "audible.fr"
+      VERIFY_TOLERANCE_PCT: "10"
+      VERIFY_MIN_ECART_MIN: "5"
+      VERIFY_ACCEPT_TAG: "duree-ok"
+
+      # ---------------- Interface web (réseau local, sans mot de passe) ----------------
+      WEB_ENABLE: "true"
+      WEB_PORT: "8681"
       UNMATCHED_DIR: "/Media/Bibliothèque/a-trier"
 
       # ---------------- Export des livres validés ----------------
@@ -82,6 +98,9 @@ services:
       EXPORT_COLLAPSE_SPACES: "false"
       EXPORT_MAX_COMPONENT: "180"
       EXPORT_PRUNE_STALE: "true"
+
+    ports:
+      - "8681:8681"
 
     volumes:
       - "/volume1/docker/abs-tagger/config:/config"
