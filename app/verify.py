@@ -30,6 +30,7 @@ import logging
 import os
 import time
 
+import runstate
 from absclient import AbsError
 
 log = logging.getLogger("verify")
@@ -85,8 +86,10 @@ def load_cache(cfg) -> dict:
 
 
 def save_cache(cfg, cache: dict) -> None:
+    """Écriture atomique, sous le verrou partagé avec l'interface web."""
     path = cache_path(cfg)
     try:
+        runstate.VERROU.acquire()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = f"{path}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -94,6 +97,11 @@ def save_cache(cfg, cache: dict) -> None:
         os.replace(tmp, path)
     except Exception as e:
         log.warning("Cache de vérification non enregistré : %s", e)
+    finally:
+        try:
+            runstate.VERROU.release()
+        except RuntimeError:
+            pass
 
 
 def _needs_check(entry: dict, cached: dict, retry_days: int) -> bool:

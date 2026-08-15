@@ -16,6 +16,8 @@ services:
       context: .
       dockerfile: Dockerfile
     image: abs-m4b-tagger:local
+    # Construire au lieu de tirer : sans ceci, le bouton
+    # « Re-pull image » de Portainer echoue en pull access denied.
     pull_policy: build
     container_name: abs-m4b-tagger
     restart: unless-stopped
