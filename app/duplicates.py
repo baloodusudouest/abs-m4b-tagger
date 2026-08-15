@@ -21,6 +21,7 @@ côte à côte et de choisir soi-même laquelle conserver.
 import logging
 import os
 
+import verify as verifymod
 from triage import AUDIO_EXT, _unique_dest, _relative_root
 
 log = logging.getLogger("duplicates")
@@ -133,6 +134,43 @@ def find_groups(store: dict, keys: list) -> list:
     return groups
 
 
+# ------------------------------------------------- classement par vérification
+CONFIRME = "confirme"
+ASIN_ERRONE = "asin_errone"
+INDETERMINE = "indetermine"
+
+CLASSES = {
+    CONFIRME: "doublon confirmé",
+    ASIN_ERRONE: "ASIN erroné",
+    INDETERMINE: "à vérifier",
+}
+
+
+def classify(group: dict, verdicts: dict) -> str:
+    """Un même ASIN pour deux livres n'est pas un doublon, c'est une erreur
+    d'identification. La durée de référence permet de distinguer les deux.
+
+    - toutes les copies collent à la durée Audible -> vrai doublon
+    - certaines seulement                          -> ASIN erroné sur les autres
+    - aucune information exploitable               -> indéterminé
+    """
+    statuts = []
+    for entry in group["copies"]:
+        v = verdicts.get(entry["id"]) or {}
+        statut = v.get("statut")
+        entry["verification"] = statut
+        entry["ecart_pct"] = v.get("ecart_pct")
+        statuts.append(statut)
+
+    if not any(s in (verifymod.OK, verifymod.ECART) for s in statuts):
+        return INDETERMINE
+    if all(s == verifymod.OK for s in statuts):
+        return CONFIRME
+    if any(s == verifymod.OK for s in statuts):
+        return ASIN_ERRONE
+    return INDETERMINE
+
+
 # ------------------------------------------------------------- déplacement
 def _targets_for(entry: dict, roots: list) -> list:
     """Que déplacer pour cet item : son dossier, ou ses fichiers isolés.
@@ -207,51 +245,83 @@ def move_group(cfg, group: dict, roots: list) -> int:
 
 
 # ------------------------------------------------------------------ rapport
-def handle_duplicates(cfg, store: dict, report: list) -> int:
+def handle_duplicates(cfg, store: dict, report: list, verdicts: dict = None) -> int:
     """Signale — et éventuellement isole — les doublons. Retourne leur nombre."""
     if cfg.duplicate_action == "none" or not store:
         return 0
 
+    verdicts = verdicts or {}
     groups = find_groups(store, cfg.duplicate_keys)
     if not groups:
         log.info("Aucun doublon détecté (clés : %s).", ", ".join(cfg.duplicate_keys))
         return 0
 
-    total = sum(len(g["copies"]) for g in groups)
-    log.warning("%d livre(s) en doublon, soit %d copie(s) :", len(groups), total)
-
     for group in groups:
-        log.warning("  %s = %s — « %s »", group["cle"].upper(), group["valeur"],
-                    group["titre"] or "?")
-        for entry in group["copies"]:
-            alerte = ""
-            if entry["fichiers_manquants"]:
-                alerte = f"  /!\\ {entry['fichiers_manquants']} fichier(s) absent(s) du disque"
-            log.warning("    - %s  [%s, %s, %d fichier(s), %s]%s",
-                        entry["chemin_local"], entry["taille"], entry["duree"],
-                        entry["nb_fichiers"],
-                        "/".join(entry["formats"]) or "?", alerte)
-        report.append({
-            "doublon": group["valeur"],
-            "cle": group["cle"],
-            "titre": group["titre"],
-            "copies": [{
-                "id": e["id"],
-                "chemin": e["chemin_local"],
-                "taille": e["taille"],
-                "duree": e["duree"],
-                "nb_fichiers": e["nb_fichiers"],
-                "formats": e["formats"],
-            } for e in group["copies"]],
-        })
+        group["classe"] = classify(group, verdicts)
 
-    if cfg.duplicate_action == "move":
-        roots = cfg.library_roots
-        log.warning("  Isolement dans %s — Audiobookshelf marquera ces items "
-                    "« manquants » au prochain scan.", cfg.duplicate_dir)
-        for group in groups:
-            move_group(cfg, group, roots)
-    else:
+    par_classe = {c: [g for g in groups if g["classe"] == c] for c in CLASSES}
+    total = sum(len(g["copies"]) for g in groups)
+    log.warning("%d livre(s) en doublon, soit %d copie(s) — %d confirmé(s), "
+                "%d ASIN erroné(s), %d à vérifier :", len(groups), total,
+                len(par_classe[CONFIRME]), len(par_classe[ASIN_ERRONE]),
+                len(par_classe[INDETERMINE]))
+
+    for classe, membres in par_classe.items():
+        if not membres:
+            continue
+        log.warning("  --- %s (%d) ---", CLASSES[classe].upper(), len(membres))
+        for group in membres:
+            log.warning("  %s = %s — « %s »", group["cle"].upper(), group["valeur"],
+                        group["titre"] or "?")
+            for entry in group["copies"]:
+                marques = []
+                if entry["fichiers_manquants"]:
+                    marques.append(f"{entry['fichiers_manquants']} fichier(s) absent(s)")
+                if entry.get("verification") == verifymod.ECART:
+                    marques.append(f"durée hors fiche ({entry.get('ecart_pct')}%)")
+                elif entry.get("verification") == verifymod.OK:
+                    marques.append("durée conforme")
+                log.warning("    - %s  [%s, %s, %d fichier(s), %s]%s",
+                            entry["chemin_local"], entry["taille"], entry["duree"],
+                            entry["nb_fichiers"], "/".join(entry["formats"]) or "?",
+                            "  <- " + ", ".join(marques) if marques else "")
+            report.append({
+                "doublon": group["valeur"],
+                "cle": group["cle"],
+                "classe": CLASSES[classe],
+                "titre": group["titre"],
+                "copies": [{
+                    "id": e["id"],
+                    "chemin": e["chemin_local"],
+                    "taille": e["taille"],
+                    "duree": e["duree"],
+                    "nb_fichiers": e["nb_fichiers"],
+                    "formats": e["formats"],
+                    "verification": e.get("verification"),
+                    "ecart_pct": e.get("ecart_pct"),
+                } for e in group["copies"]],
+            })
+
+    if cfg.duplicate_action != "move":
         log.warning("  (DUPLICATE_ACTION=report : rien n'a été déplacé)")
+        return len(groups)
+
+    # Déplacer un groupe « ASIN erroné », ce serait sortir de la bibliothèque
+    # deux livres différents dont un seul pose problème.
+    deplacables = list(par_classe[CONFIRME])
+    if cfg.duplicate_move_unverified:
+        deplacables += par_classe[INDETERMINE]
+    ignores = len(groups) - len(deplacables)
+
+    if ignores:
+        log.warning("  %d groupe(s) NON déplacé(s) : identification à corriger dans "
+                    "Audiobookshelf d'abord.", ignores)
+    if deplacables:
+        roots = cfg.library_roots
+        log.warning("  Isolement de %d groupe(s) dans %s — Audiobookshelf marquera "
+                    "ces items « manquants » au prochain scan.",
+                    len(deplacables), cfg.duplicate_dir)
+        for group in deplacables:
+            move_group(cfg, group, roots)
 
     return len(groups)
