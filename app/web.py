@@ -23,6 +23,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, request, Response
 
@@ -82,23 +83,67 @@ def creer_app(cfg) -> Flask:
 
     # ------------------------------------------------------------- helpers
     def _titre(item_id: str, mesure: dict) -> dict:
-        """Titre et chemin : depuis le cache si possible, sinon depuis ABS."""
+        """Titre et chemin, sans accès réseau : le remplissage est fait avant."""
         if mesure.get("titre"):
             return {"titre": mesure["titre"], "chemin": mesure.get("chemin", "")}
-        if item_id in cache_titres:
-            return cache_titres[item_id]
-        try:
-            raw = client.item(item_id)
-            md = (raw.get("media") or {}).get("metadata") or {}
-            info = {"titre": md.get("title") or item_id, "chemin": raw.get("path", "")}
-        except Exception:
-            info = {"titre": item_id, "chemin": ""}
-        cache_titres[item_id] = info
-        return info
+        return cache_titres.get(item_id) or {"titre": item_id, "chemin": ""}
+
+    def _completer_titres(manquants: dict) -> None:
+        """Récupère les titres absents du cache, en parallèle, une seule fois.
+
+        Les caches écrits par les versions antérieures ne contiennent que des
+        durées. Interroger ABS en série pour 150 livres bloquait l'affichage
+        plusieurs minutes ; on parallélise, puis on écrit le résultat dans
+        `verifications.json` pour que la fois suivante soit immédiate.
+        """
+        a_chercher = [i for i in manquants if i not in cache_titres]
+        if not a_chercher:
+            return
+        log.info("Interface : récupération de %d titre(s) manquant(s)…",
+                 len(a_chercher))
+
+        def _un(item_id):
+            try:
+                raw = client.item(item_id)
+                md = (raw.get("media") or {}).get("metadata") or {}
+                return item_id, {"titre": md.get("title") or item_id,
+                                 "chemin": raw.get("path", "")}
+            except Exception:
+                return item_id, {"titre": item_id, "chemin": ""}
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for item_id, info in pool.map(_un, a_chercher):
+                cache_titres[item_id] = info
+
+        # Persisté : le coût n'est payé qu'une fois.
+        with runstate.VERROU:
+            brut = verifymod.load_cache(cfg)
+            touche = False
+            for item_id, info in cache_titres.items():
+                if item_id in brut and not brut[item_id].get("titre"):
+                    brut[item_id]["titre"] = info["titre"]
+                    brut[item_id]["chemin"] = info["chemin"]
+                    touche = True
+            if touche:
+                verifymod.save_cache(cfg, brut)
 
     def _ecarts() -> list:
         mesures = verifymod.load_cache(cfg)
         validations = verifymod.load_validations(cfg)
+
+        # 1er temps : quels items sont concernés, sans toucher au réseau
+        retenus = {}
+        for item_id, brut in mesures.items():
+            m = verifymod._normalise(brut)
+            if not m.get("trouve"):
+                continue
+            v = verifymod.verdict(m, cfg)
+            enreg = validations.get(item_id) or {}
+            valide = bool(enreg) and not enreg.get("revoquee")
+            if v["statut"] == verifymod.ECART or valide:
+                retenus[item_id] = m
+        _completer_titres({i: m for i, m in retenus.items() if not m.get("titre")})
+
         out = []
         for item_id, brut in mesures.items():
             mesure = verifymod._normalise(brut)
