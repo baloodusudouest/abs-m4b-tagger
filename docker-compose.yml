@@ -12,11 +12,10 @@
 
 services:
   abs-m4b-tagger:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: abs-m4b-tagger:local
-    pull_policy: build
-    labels:
-      - "com.centurylinklabs.watchtower.enable=false"
     container_name: abs-m4b-tagger
     restart: unless-stopped
 
@@ -70,6 +69,18 @@ services:
       DUPLICATE_ACTION: "${DUPLICATE_ACTION:-report}"   # report | move | none
       DUPLICATE_KEYS: "${DUPLICATE_KEYS:-asin}"         # asin,isbn,titre
       DUPLICATE_DIR: "${DUPLICATE_DIR:-/media/a-trier/doublons}"
+      DUPLICATE_MOVE_UNVERIFIED: "${DUPLICATE_MOVE_UNVERIFIED:-false}"
+
+      # ---------------- Contrôle des durées auprès du fournisseur ----------------
+      # Compare la durée réelle du fichier à celle annoncée par Audible pour
+      # l'ASIN de l'item, via l'API d'ABS. Résultat mis en cache : seuls les
+      # livres nouveaux ou modifiés sont recontrôlés aux passes suivantes.
+      VERIFY_ACTION: "${VERIFY_ACTION:-report}"          # report | none
+      VERIFY_PROVIDER: "${VERIFY_PROVIDER:-audible.fr}"
+      VERIFY_TOLERANCE_PCT: "${VERIFY_TOLERANCE_PCT:-2}"
+      VERIFY_DELAY_MS: "${VERIFY_DELAY_MS:-400}"         # pause entre 2 requêtes
+      VERIFY_MAX_PER_PASS: "${VERIFY_MAX_PER_PASS:-0}"   # 0 = pas de plafond
+      VERIFY_RETRY_DAYS: "${VERIFY_RETRY_DAYS:-30}"
 
       # ---------------- Export des livres validés ----------------
       # Seuls les livres complets (non signalés par le triage) sont exportés.
