@@ -23,6 +23,7 @@ from tagger import AUDIO_EXT, BookMeta, prepare_cover, write_mp3, write_mp4
 import chapters as chapmod
 import triage
 import duplicates as dupmod
+import verify as verifymod
 import export as exportmod
 
 log = logging.getLogger("main")
@@ -131,7 +132,8 @@ def handle_incomplete(client, cfg, meta, item, gaps, report) -> None:
 
 
 def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
-                 known_paths: set, report: list, dup_store: dict) -> str:
+                 known_paths: set, report: list, dup_store: dict,
+                 verify_store: dict) -> str:
     """Retourne 'ok', 'skip', 'incomplete', 'error' ou 'missing'."""
     raw = client.item(item_id)
     meta = BookMeta(raw, strip_html=cfg.strip_html)
@@ -157,6 +159,7 @@ def process_item(client: AbsClient, cfg: Config, item_id: str, state: dict,
     # Enregistré avant tout retour anticipé : un doublon doit rester visible
     # même quand le cache d'état fait sauter les deux copies.
     dupmod.register(dup_store, cfg, meta)
+    verifymod.register(verify_store, cfg, meta)
 
     # --- livre non identifié ? -------------------------------------------
     gaps = triage.missing_fields(meta, raw, cfg.incomplete_checks)
@@ -346,7 +349,7 @@ def run_once(cfg: Config) -> int:
     client = AbsClient(cfg.abs_url, cfg.abs_token, cfg.verify_ssl, cfg.timeout)
     state = load_state(cfg.state_file)
     stats = {"ok": 0, "skip": 0, "incomplete": 0, "error": 0, "missing": 0}
-    known_paths, report, dup_store = set(), [], {}
+    known_paths, report, dup_store, verify_store = set(), [], {}, {}
     started = time.time()
     full_scan = not cfg.only_items
 
@@ -366,7 +369,7 @@ def run_once(cfg: Config) -> int:
             break
         try:
             result = process_item(client, cfg, item_id, state, known_paths,
-                                  report, dup_store)
+                                  report, dup_store, verify_store)
         except AbsError as e:
             log.error("  %s : %s", item_id, e)
             result = "error"
@@ -379,9 +382,16 @@ def run_once(cfg: Config) -> int:
 
     save_state(cfg.state_file, state)
 
+    verdicts = {}
+    if full_scan and not _STOP:
+        try:
+            verdicts = verifymod.run(cfg, client, verify_store, report)
+        except Exception as e:
+            log.error("Vérification des durées interrompue : %s", e)
+
     duplicates_found = 0
     if full_scan:
-        duplicates_found = dupmod.handle_duplicates(cfg, dup_store, report)
+        duplicates_found = dupmod.handle_duplicates(cfg, dup_store, report, verdicts)
 
     orphans = 0
     if full_scan and not cfg.libraries:
@@ -409,6 +419,8 @@ def main() -> int:
     parser.add_argument("--library", action="append", default=[], help="nom ou id de bibliothèque")
     parser.add_argument("--no-triage", action="store_true",
                         help="désactive le tag/déplacement des non identifiés et orphelins")
+    parser.add_argument("--no-verify", action="store_true",
+                        help="ne contrôle pas les durées auprès du fournisseur")
     parser.add_argument("--duplicates-only", action="store_true",
                         help="ne fait que détecter les doublons (aucune écriture de tags)")
     args = parser.parse_args()
@@ -428,6 +440,7 @@ def main() -> int:
         cfg.on_incomplete = "none"
         cfg.orphan_action = "none"
         cfg.duplicate_action = "none"
+        cfg.verify_action = "none"
         cfg.tag_incomplete_files = True
     if args.duplicates_only:
         cfg.dry_run = True
@@ -438,6 +451,8 @@ def main() -> int:
         cfg.interval = 0
         if cfg.duplicate_action == "none":
             cfg.duplicate_action = "report"
+    if args.no_verify:
+        cfg.verify_action = "none"
 
     logging.basicConfig(
         level=getattr(logging, cfg.log_level, logging.INFO),
@@ -474,6 +489,10 @@ def main() -> int:
     if cfg.orphan_action != "none":
         log.info("Orphelins disque : action=%s, dossier de tri=%s",
                  cfg.orphan_action, cfg.unmatched_dir)
+    if cfg.verify_action != "none":
+        log.info("Vérification des durées : fournisseur=%s, tolérance=%s%%, "
+                 "cache=/config/verifications.json",
+                 cfg.verify_provider, cfg.verify_tolerance_pct)
     if cfg.duplicate_action != "none":
         log.info("Doublons : action=%s, clés=%s%s", cfg.duplicate_action,
                  ",".join(cfg.duplicate_keys),

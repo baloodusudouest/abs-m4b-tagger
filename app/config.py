@@ -21,6 +21,16 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw.strip().replace(",", "."))
+    except ValueError:
+        return default
+
+
 def _list(name: str, default=None) -> list:
     raw = os.environ.get(name, "")
     if not raw.strip():
@@ -93,6 +103,15 @@ class Config:
     duplicate_action: str = "report"      # report | move | none
     duplicate_keys: list = field(default_factory=lambda: ["asin"])
     duplicate_dir: str = "/a-trier/doublons"
+    duplicate_move_unverified: bool = False   # déplacer même sans vérification
+
+    # --- Vérification des durées auprès du fournisseur (via ABS) ---
+    verify_action: str = "report"         # report | none
+    verify_provider: str = "audible.fr"
+    verify_tolerance_pct: float = 2.0
+    verify_delay_ms: int = 400            # pause entre deux requêtes sortantes
+    verify_max_per_pass: int = 0          # 0 = pas de plafond
+    verify_retry_days: int = 30           # réessai des « introuvable »
 
     # --- Export des livres validés ---
     export_action: str = "none"          # none | copy | move | hardlink | symlink
@@ -158,6 +177,13 @@ class Config:
             duplicate_action=os.environ.get("DUPLICATE_ACTION", "report").strip().lower(),
             duplicate_keys=[k.lower() for k in _list("DUPLICATE_KEYS", ["asin"])],
             duplicate_dir=os.environ.get("DUPLICATE_DIR", "/a-trier/doublons").rstrip("/"),
+            duplicate_move_unverified=_bool("DUPLICATE_MOVE_UNVERIFIED", False),
+            verify_action=os.environ.get("VERIFY_ACTION", "report").strip().lower(),
+            verify_provider=os.environ.get("VERIFY_PROVIDER", "audible.fr").strip(),
+            verify_tolerance_pct=_float("VERIFY_TOLERANCE_PCT", 2.0),
+            verify_delay_ms=_int("VERIFY_DELAY_MS", 400),
+            verify_max_per_pass=_int("VERIFY_MAX_PER_PASS", 0),
+            verify_retry_days=_int("VERIFY_RETRY_DAYS", 30),
             export_action=os.environ.get("EXPORT_ACTION", "none").strip().lower(),
             move_cleanup_source=_bool("MOVE_CLEANUP_SOURCE", True),
             after_move=os.environ.get("AFTER_MOVE", "keep").strip().lower(),
@@ -238,6 +264,13 @@ class Config:
                         f"DUPLICATE_DIR ({self.duplicate_dir}) est à l'intérieur de la "
                         f"bibliothèque ({root}) : Audiobookshelf rescannerait les doublons "
                         f"mis de côté")
+        if self.verify_action not in ("report", "none"):
+            errors.append("VERIFY_ACTION doit valoir report ou none")
+        if self.verify_action != "none":
+            if not self.verify_provider:
+                errors.append("VERIFY_PROVIDER ne peut pas être vide")
+            if not 0 < self.verify_tolerance_pct < 100:
+                errors.append("VERIFY_TOLERANCE_PCT doit être compris entre 0 et 100")
         if self.orphan_action != "none" and not self.library_roots:
             errors.append("ORPHAN_SCAN_DIRS (ou PATH_MAP) est requis pour la détection des orphelins")
         if self.export_action not in ("none", "copy", "move", "hardlink", "symlink"):

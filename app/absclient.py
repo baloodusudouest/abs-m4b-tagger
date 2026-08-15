@@ -1,84 +1,9 @@
 """Client minimal de l'API Audiobookshelf."""
 
-import html as _html
 import logging
-import os
-import re
-
 import requests
 
 log = logging.getLogger("abs")
-
-
-# --------------------------------------------------------------------- entités
-# Audiobookshelf renvoie parfois des entités HTML non décodées dans les champs
-# texte (« Jusqu&rsquo;à la fin du monde », « Les Sept S&oelig;urs »). Elles se
-# retrouvent telles quelles dans les tags des fichiers et dans les noms de
-# dossiers exportés. On les décode dès la sortie de l'API.
-#
-# Mettre DECODE_HTML_ENTITIES=false pour retrouver l'ancien comportement.
-DECODE_HTML_ENTITIES = os.getenv("DECODE_HTML_ENTITIES", "true").strip().lower() not in (
-    "false", "0", "no", "off",
-)
-
-# Volontairement STRICT : html.unescape() décode aussi les entités sans
-# point-virgule final, ce qui transformerait « Fish&notchips » en « Fish¬chips »
-# ou « R&Bient » en « R®ient ». On n'accepte que les formes bien fermées.
-_ENTITY_RE = re.compile(
-    r"&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});"
-)
-
-# Champs contenant du HTML légitime : y décoder &lt; et &gt; fabriquerait de
-# vraies balises, que STRIP_HTML supprimerait ensuite avec le texte autour.
-_MARKUP_KEYS = {"description", "descriptionPlain", "descriptionHtml", "html"}
-_MARKUP_ENTITIES = {"lt", "gt", "amp", "#60", "#62", "#38", "#x3c", "#x3e", "#x26"}
-
-# CHAMPS À NE JAMAIS TOUCHER.
-# Un chemin n'est pas du texte affichable : c'est un identifiant qui doit
-# rester exact à l'octet près. Certains fichiers de la bibliothèque portent
-# réellement l'entité dans leur nom (« Trois ma&icirc;tres (2021).m4b ») ;
-# les décoder ferait chercher un fichier qui n'existe pas sur le disque.
-_RAW_KEYS = {
-    "path", "relPath", "folderPath", "metadataPath", "fullPath", "coverPath",
-    "filename", "ext", "libraryFolderId", "ino", "id",
-}
-
-# Certaines valeurs arrivent doublement encodées (« &amp;rsquo; »).
-_MAX_PASSES = 3
-
-
-def _sub_entity(m, keep_markup):
-    if keep_markup and m.group(1).lower() in _MARKUP_ENTITIES:
-        return m.group(0)
-    return _html.unescape(m.group(0))
-
-
-def decode_entities(text, keep_markup=False):
-    """Décode les entités HTML bien formées d'une chaîne."""
-    if not isinstance(text, str) or "&" not in text:
-        return text
-    for _ in range(_MAX_PASSES):
-        new = _ENTITY_RE.sub(lambda m: _sub_entity(m, keep_markup), text)
-        if new == text:
-            break
-        text = new
-    return text
-
-
-def deep_decode(obj, _key=None):
-    """Applique decode_entities() aux chaînes d'une structure JSON.
-
-    Les champs de chemin (_RAW_KEYS) sont laissés strictement intacts.
-    """
-    if isinstance(obj, str):
-        if _key in _RAW_KEYS:
-            return obj
-        return decode_entities(obj, keep_markup=(_key in _MARKUP_KEYS))
-    if isinstance(obj, dict):
-        return {k: deep_decode(v, k) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [deep_decode(v, _key) for v in obj]
-    return obj
 
 
 class AbsError(Exception):
@@ -108,36 +33,25 @@ class AbsClient:
         r.raise_for_status()
         return r
 
-    def _json(self, path: str, decode: bool = True, **params):
-        """GET + parsing JSON, entités HTML décodées au passage.
-
-        decode=False sur les endpoints dont on n'exploite que les identifiants :
-        inutile de parcourir toute la structure.
-        """
-        data = self._get(path, **params).json()
-        if decode and DECODE_HTML_ENTITIES:
-            return deep_decode(data)
-        return data
-
     def ping(self) -> str:
         r = self._get("/ping")
         try:
-            data = self._json("/api/me")
+            data = self._get("/api/me").json()
             return data.get("username", "?")
         except Exception:
             return "?" if r.ok else "?"
 
     # -------------------------------------------------------------- endpoints
     def libraries(self) -> list:
-        data = self._json("/api/libraries")
+        data = self._get("/api/libraries").json()
         return data.get("libraries", data if isinstance(data, list) else [])
 
     def library_item_ids(self, library_id: str) -> list:
         """Récupère tous les ids d'items d'une bibliothèque (pagination incluse)."""
         ids, page, limit = [], 0, 500
         while True:
-            data = self._json(f"/api/libraries/{library_id}/items",
-                              decode=False, limit=limit, page=page, minified=1)
+            data = self._get(f"/api/libraries/{library_id}/items",
+                             limit=limit, page=page, minified=1).json()
             results = data.get("results", [])
             for it in results:
                 if it.get("mediaType", "book") == "book":
@@ -149,7 +63,7 @@ class AbsClient:
         return ids
 
     def item(self, item_id: str) -> dict:
-        return self._json(f"/api/items/{item_id}", expanded=1)
+        return self._get(f"/api/items/{item_id}", expanded=1).json()
 
     def set_tags(self, item_id: str, tags: list) -> bool:
         """Remplace la liste de tags d'un item (PATCH, avec repli sur batch/update)."""
@@ -172,6 +86,35 @@ class AbsClient:
         if not r.ok:
             raise AbsError(f"suppression de l'item impossible ({r.status_code})")
         return True
+
+    def search_books(self, title: str, author: str = "", provider: str = "audible.fr") -> list:
+        """Interroge un fournisseur de métadonnées VIA Audiobookshelf.
+
+        C'est l'endpoint qu'utilise l'onglet « Chercher » de l'interface. ABS
+        relaie la requête vers Audible : aucune clé supplémentaire n'est
+        nécessaire, seul le token ABS compte. `title` accepte un ASIN.
+
+        Retourne une liste de dictionnaires ; le champ `duration` y est exprimé
+        en MINUTES.
+        """
+        params = {"title": title, "provider": provider}
+        if author:
+            params["author"] = author
+        url = f"{self.base}/api/search/books"
+        r = self.s.get(url, params=params, timeout=self.timeout)
+        if r.status_code == 429:
+            raise AbsError("429 : trop de requêtes, le fournisseur limite le débit")
+        if r.status_code == 401:
+            raise AbsError("401 non autorisé : vérifie ABS_TOKEN (clé API).")
+        if not r.ok:
+            raise AbsError(f"recherche fournisseur impossible ({r.status_code})")
+        try:
+            data = r.json()
+        except ValueError:
+            raise AbsError("réponse du fournisseur illisible")
+        if isinstance(data, dict):
+            data = data.get("results") or data.get("books") or []
+        return data if isinstance(data, list) else []
 
     def cover(self, item_id: str) -> tuple:
         """Retourne (bytes, mime) ou (None, None)."""
