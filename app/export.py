@@ -98,7 +98,12 @@ def transfer(src: str, dst: str, action: str, overwrite: bool,
             os.symlink(src, dst)
             return "copie"
         elif action == "move":
-            shutil.move(src, tmp)
+            # Audit du 17/11/2026 : copie d'abord, source retirée seulement une fois la copie en place
+            # (avant : si os.replace échouait, le nettoyage effaçait le .part, alors seule copie)
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dst)
+            os.remove(src)
+            return "copie"
         else:
             shutil.copy2(src, tmp)
         os.replace(tmp, dst)

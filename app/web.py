@@ -64,6 +64,14 @@ def _rapport(cfg) -> list:
     return data.get("elements", []) if isinstance(data, dict) else []
 
 
+def _dans_la_bibliotheque(chemin: str, racines) -> bool:
+    """Audit du 17/11/2026 : seuls les chemins sous une racine de la bibliothèque peuvent être déplacés."""
+    if not chemin:
+        return False
+    reel = os.path.realpath(chemin)
+    return any(reel.startswith(os.path.realpath(r).rstrip("/") + "/") for r in racines or [] if r)
+
+
 def creer_app(cfg) -> Flask:
     app = Flask(__name__)
     app.config["JSON_AS_ASCII"] = False
@@ -240,7 +248,7 @@ def creer_app(cfg) -> Flask:
     # -------------------------------------------------------------- actions
     @app.post("/api/valider")
     def valider():
-        body = request.get_json(force=True) or {}
+        body = request.get_json(silent=True) or {}
         item_id = body.get("id")
         actif = bool(body.get("actif", True))
         if not item_id or not cfg.verify_accept_tag:
@@ -277,7 +285,7 @@ def creer_app(cfg) -> Flask:
     @app.post("/api/appliquer")
     def appliquer():
         """Applique une fiche fournisseur à un item : métadonnées + pochette."""
-        body = request.get_json(force=True) or {}
+        body = request.get_json(silent=True) or {}
         item_id, asin = body.get("id"), (body.get("asin") or "").strip()
         if not item_id or not asin:
             return jsonify({"erreur": "paramètres manquants"}), 400
@@ -335,7 +343,7 @@ def creer_app(cfg) -> Flask:
     @app.post("/api/doublon/resoudre")
     def resoudre_doublon():
         """Isole les copies non retenues d'un groupe."""
-        body = request.get_json(force=True) or {}
+        body = request.get_json(silent=True) or {}
         garder = body.get("garder")
         copies = body.get("copies") or []
         libelle = (body.get("libelle") or "doublon").replace("/", "_")[:120]
@@ -350,7 +358,10 @@ def creer_app(cfg) -> Flask:
                 if copie.get("id") == garder:
                     continue
                 chemin = copie.get("chemin")
-                if not chemin or not os.path.exists(chemin):
+                if not _dans_la_bibliotheque(chemin, cfg.library_roots):
+                    erreurs.append(f"hors de la bibliothèque : {chemin}")
+                    continue
+                if not os.path.exists(chemin):
                     erreurs.append(f"introuvable : {chemin}")
                     continue
                 dest = os.path.join(cfg.duplicate_dir, libelle,
@@ -366,10 +377,12 @@ def creer_app(cfg) -> Flask:
 
     @app.post("/api/orphelin")
     def orphelin():
-        body = request.get_json(force=True) or {}
+        body = request.get_json(silent=True) or {}
         chemin, action = body.get("chemin"), body.get("action")
         if not chemin or action not in ("move",):
             return jsonify({"erreur": "paramètres manquants"}), 400
+        if not _dans_la_bibliotheque(chemin, cfg.library_roots):
+            return jsonify({"erreur": "chemin hors de la bibliothèque"}), 400
         if not os.path.exists(chemin):
             return jsonify({"erreur": "chemin introuvable"}), 404
         with runstate.VERROU:
